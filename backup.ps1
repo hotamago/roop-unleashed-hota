@@ -1,7 +1,8 @@
 # ============================================================
 # Configuration
 # ============================================================
-$verbose = $false   # Set to $true for detailed logging
+$verbose = $false       # Set to $true for detailed logging
+$minutesBack = 0       # Only include files modified within this many minutes (0 = all files)
 
 # Folders to exclude entirely
 $excludeFolders = @(
@@ -13,23 +14,23 @@ $excludeFolders = @(
     '__pycache__', 
     '.git', 
     'saved_configs',
-    'insightface',      # face analysis models
-    'codeformer',       # enhancer models
-    'gfpgan',           # enhancer models
-    'checkpoints',      # model checkpoints
-    'weights'           # model weights
+    'insightface',
+    'codeformer',
+    'gfpgan',
+    'checkpoints',
+    'weights'
 )
 
 # File extensions to exclude
 $excludeExtensions = @(
-    '.onnx', '.pth', '.pt', '.bin', '.pkl',     # model files
-    '.mp4', '.avi', '.mkv', '.webm', '.gif',    # video files
-    '.jpg', '.jpeg', '.png', '.webp', '.bmp',   # image files
-    '.zip', '.tar', '.gz', '.7z',               # archives
-    '.npy', '.npz',                             # numpy arrays
-    '.safetensors', '.ckpt',                    # more model formats
-    '.db', '.sqlite',                           # databases
-    '.exe', '.dll', '.so', '.pyd'               # binaries
+    '.onnx', '.pth', '.pt', '.bin', '.pkl',
+    '.mp4', '.avi', '.mkv', '.webm', '.gif',
+    '.jpg', '.jpeg', '.png', '.webp', '.bmp',
+    '.zip', '.tar', '.gz', '.7z',
+    '.npy', '.npz',
+    '.safetensors', '.ckpt',
+    '.db', '.sqlite',
+    '.exe', '.dll', '.so', '.pyd'
 )
 
 # ============================================================
@@ -37,8 +38,9 @@ $excludeExtensions = @(
 # ============================================================
 $source = $PSScriptRoot
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$dest = "$PSScriptRoot\..\roop-unleashed_backup_$timestamp.zip"
-$logFile = "$PSScriptRoot\..\roop-unleashed_backup_$timestamp.log"
+$stagingDir = "$PSScriptRoot\..\roop-claude-upload_$timestamp"
+$logFile = "$PSScriptRoot\..\roop-claude-upload_$timestamp.log"
+$cutoffTime = (Get-Date).AddMinutes(-$minutesBack)
 
 function Write-Log {
     param([string]$message, [string]$level = "INFO")
@@ -63,11 +65,16 @@ function Write-Log {
 # ============================================================
 # Main
 # ============================================================
-Write-Log "Backup started"
-Write-Log "Source : $source"
-Write-Log "Output : $dest"
-Write-Log "Verbose: $verbose"
-Write-Log "Scanning files..."
+Write-Log "Export started"
+Write-Log "Source      : $source"
+Write-Log "Staging dir : $stagingDir"
+if ($minutesBack -gt 0) {
+    Write-Log "Changed since: $($cutoffTime.ToString('HH:mm:ss')) (last $minutesBack minutes)"
+} else {
+    Write-Log "Changed since: ALL FILES (minutesBack = 0)"
+}
+
+New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
 
 $includedFiles = @()
 $excludedCount = 0
@@ -90,70 +97,54 @@ foreach ($file in $allFiles) {
         $reason = "excluded extension '$($file.Extension)'"
     }
 
-    # Check file size - skip anything over 50MB individually
+    # Check file size
     if (-not $reason -and $file.Length -gt 50MB) {
         $reason = "file too large ($([math]::Round($file.Length / 1MB, 1)) MB)"
     }
 
+    # Check modified time (skip check if minutesBack = 0, meaning include all)
+    if (-not $reason -and $minutesBack -gt 0 -and $file.LastWriteTime -lt $cutoffTime) {
+        $reason = "not recently modified (last modified $($file.LastWriteTime.ToString('HH:mm:ss')))"
+    }
+
     if ($reason) {
-        Write-Log "SKIP : $relativePath — $reason" "EXCLUDE"
+        Write-Log "SKIP : $relativePath -- $reason" "EXCLUDE"
         $excludedCount++
     } else {
         Write-Log "INCLUDE : $relativePath" "INCLUDE"
-        $includedFiles += $file.FullName
+        $includedFiles += $file
     }
 }
 
-Write-Log "Scan complete — $($includedFiles.Count) included, $excludedCount excluded" "INFO"
+Write-Log "Scan complete -- $($includedFiles.Count) included, $excludedCount excluded" "INFO"
 
 if ($includedFiles.Count -eq 0) {
-    Write-Log "No files to archive — aborting!" "ERROR"
+    Write-Log "No files matched -- try increasing minutesBack or set it to 0 for all files." "WARN"
     Start-Sleep -Seconds 5
     exit
 }
 
 # ============================================================
-# Compress using ZipFile .NET class to preserve folder structure
+# Copy files into flat staging folder, prefixing path into filename
+# e.g. app/roop/core.py becomes app__roop__core.py
+# This lets Claude see the full path context from the filename alone
 # ============================================================
-Write-Log "Compressing files..." "INFO"
-
-try {
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    Add-Type -AssemblyName System.IO.Compression
-
-    $zip = [System.IO.Compression.ZipFile]::Open($dest, 'Create')
-
-    foreach ($filePath in $includedFiles) {
-        # Calculate relative path to preserve directory structure
-        $relativePath = $filePath.Substring($source.Length + 1).Replace('\', '/')
-        Write-Log "Zipping: $relativePath" "INCLUDE"
-        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
-            $zip, 
-            $filePath, 
-            $relativePath, 
-            [System.IO.Compression.CompressionLevel]::Optimal
-        ) | Out-Null
-    }
-
-    $zip.Dispose()
-
-    $sizeMB = [math]::Round((Get-Item $dest).Length / 1MB, 2)
-    Write-Log "Backup complete!" "INFO"
-    Write-Log "Output : $dest" "INFO"
-    Write-Log "Size   : $sizeMB MB" "INFO"
-
-    if ($sizeMB -gt 30) {
-        Write-Log "WARNING: File is larger than Claude's 30MB upload limit of 30MB!" "WARN"
-        Write-Log "Consider setting verbose=true and checking the log to find large files." "WARN"
-    } else {
-        Write-Log "File is within Claude's 30MB upload limit." "INFO"
-    }
-
-} catch {
-    if ($zip) { $zip.Dispose() }
-    Write-Log "Compression failed: $_" "ERROR"
+foreach ($file in $includedFiles) {
+    $relativePath = $file.FullName.Substring($source.Length + 1).Replace('\', '/')
+    $flatName = $relativePath.Replace('/', '__')
+    $destPath = Join-Path $stagingDir $flatName
+    Copy-Item -Path $file.FullName -Destination $destPath
+    Write-Log "Copied: $relativePath -> $flatName" "INCLUDE"
 }
 
+Write-Log "" "INFO"
+Write-Log "Done! $($includedFiles.Count) file(s) exported to:" "INFO"
+Write-Log "$stagingDir" "INFO"
+Write-Log "" "INFO"
+Write-Log "Next step: select all files in that folder and drag them into Claude." "INFO"
 Write-Log "Log saved to: $logFile" "INFO"
-Write-Host ""
+
+# Open the staging folder automatically
+Start-Process explorer.exe $stagingDir
+
 Start-Sleep -Seconds 5
