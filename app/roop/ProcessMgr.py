@@ -727,7 +727,6 @@ class ProcessMgr():
             if roi.shape != resized_mouth_cutout.shape:
                 resized_mouth_cutout = cv2.resize(resized_mouth_cutout, (roi.shape[1], roi.shape[0]))
             color_corrected_mouth = self.apply_color_transfer(resized_mouth_cutout, roi)
-            feather_amount = max(1, min(30, box_width // 15, box_height // 15))
 
             if mouth_polygon is not None:
                 # Scale polygon from original cutout coords to the resized box
@@ -737,17 +736,17 @@ class ProcessMgr():
                 hull = cv2.convexHull(scaled_pts)
                 mask = np.zeros(resized_mouth_cutout.shape[:2], dtype=np.uint8)
                 cv2.fillConvexPoly(mask, hull, 255)
-                # Dilate outward before blurring so the transition zone falls in the
-                # padding area rather than eroding inward into the lips/tongue.
+                # Small fixed dilation ensures lip extremes are fully inside the mask.
+                # Only a 3-px anti-aliasing blur follows — no wide feather — so the
+                # interior stays at mask≈1.0 and both mouths never mix visibly.
+                dilate_px = max(2, min(6, box_width // 20))
                 dilate_kernel = cv2.getStructuringElement(
-                    cv2.MORPH_ELLIPSE, (feather_amount, feather_amount))
+                    cv2.MORPH_ELLIPSE, (dilate_px * 2, dilate_px * 2))
                 mask = cv2.dilate(mask, dilate_kernel, iterations=1)
-                ksize = feather_amount * 2 + 1
-                mask = cv2.GaussianBlur(mask.astype(np.float32), (ksize, ksize), 0)
-                max_val = np.max(mask)
-                if max_val > 0:
-                    mask = mask / max_val
+                mask = cv2.GaussianBlur(mask.astype(np.float32), (3, 3), 0)
+                mask /= 255.0
             else:
+                feather_amount = max(1, min(30, box_width // 15, box_height // 15))
                 mask = self.create_feathered_mask(resized_mouth_cutout.shape, feather_amount)
 
             mask = mask[:, :, np.newaxis]
