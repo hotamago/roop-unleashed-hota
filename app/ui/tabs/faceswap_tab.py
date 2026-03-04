@@ -43,6 +43,9 @@ def faceswap_tab():
 
     with gr.Tab("🎭 Face Swap"):
         with gr.Row(variant='panel'):
+            bt_srcfiles = gr.Files(label='Source Images or Facesets', file_count="multiple", file_types=["image", ".fsz"], elem_id='filelist', height=233)
+            bt_destfiles = gr.Files(label='Target File(s)', file_count="multiple", file_types=["image", "video"], elem_id='filelist', height=233)
+        with gr.Row(variant='panel'):
             with gr.Column(scale=2):
                 with gr.Row():
                     input_faces = gr.Gallery(label="Input faces gallery", allow_preview=False, preview=False, height=138, columns=64, object_fit="scale-down", interactive=False)
@@ -137,9 +140,6 @@ def faceswap_tab():
                             )
                     with gr.Column(scale=2):
                         local_folder = gr.Textbox(show_label=False, placeholder="/content/", interactive=True)
-                with gr.Row(variant='panel'):
-                    bt_srcfiles = gr.Files(label='Source Images or Facesets', file_count="multiple", file_types=["image", ".fsz"], elem_id='filelist', height=233)
-                    bt_destfiles = gr.Files(label='Target File(s)', file_count="multiple", file_types=["image", "video"], elem_id='filelist', height=233)
                 with gr.Row(variant='panel'):
                     gr.Markdown('')
                     forced_fps = gr.Slider(minimum=0, maximum=120, value=0, label="Video FPS", info='Overrides detected fps if not 0', step=1.0, interactive=True, container=True)
