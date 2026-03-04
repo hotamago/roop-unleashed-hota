@@ -75,16 +75,28 @@ def extras_tab(bt_destfiles=None):
                 crop_top    = gr.Slider(0, 49, value=0, step=1, label="Top %")
                 crop_bottom = gr.Slider(0, 49, value=0, step=1, label="Bottom %")
 
-        # ── Single Apply + Output ─────────────────────────────────────
+        # ── Single Apply ──────────────────────────────────────────────
         with gr.Row():
             btn_apply = gr.Button("Apply", variant="primary")
+
+        # ── Output preview ────────────────────────────────────────────
+        with gr.Row():
+            output_image = gr.Image(
+                label="Output", visible=False, interactive=False,
+                show_download_button=True,
+            )
+            output_video = gr.Video(
+                label="Output", visible=False, interactive=False,
+            )
+
         with gr.Row():
             send_to_faceswap_btn = gr.Button(
                 "↗ Send to Face Swap", size="sm",
                 visible=bt_destfiles is not None,
             )
-        with gr.Row():
-            extra_files_output = gr.Files(label="Output", file_count="multiple")
+
+    # Holds the output path(s) for Send to Face Swap
+    output_path_state = gr.State(None)
 
     # ── Event wiring ──────────────────────────────────────────────────
     files_to_process.upload(
@@ -109,13 +121,13 @@ def extras_tab(bt_destfiles=None):
             crop_left, crop_right, crop_top, crop_bottom,
             file_info,
         ],
-        outputs=[extra_files_output],
+        outputs=[output_image, output_video, output_path_state],
     )
 
     if bt_destfiles is not None:
         send_to_faceswap_btn.click(
             fn=on_send_to_faceswap,
-            inputs=[extra_files_output],
+            inputs=[output_path_state],
             outputs=[bt_destfiles],
         )
 
@@ -200,9 +212,15 @@ def on_apply_all(files, resolution, rotation, fps,
     if is_vid and abs(fps - cur_fps) > 0.1:
         filters.append(f"fps={fps}")
 
+    no_output = (
+        gr.update(visible=False, value=None),
+        gr.update(visible=False, value=None),
+        None,
+    )
+
     if not filters:
         gr.Info("No changes to apply.")
-        return None
+        return no_output
 
     out = []
     for f in paths:
@@ -212,10 +230,16 @@ def on_apply_all(files, resolution, rotation, fps,
         else:
             gr.Warning(f'Processing failed for {os.path.basename(f)}')
 
-    return out or None
+    if not out:
+        return no_output
+
+    first = out[0]
+    if util.is_image(first):
+        return gr.update(visible=True, value=first), gr.update(visible=False, value=None), out
+    return gr.update(visible=False, value=None), gr.update(visible=True, value=first), out
 
 
-def on_send_to_faceswap(files):
-    if files is None:
+def on_send_to_faceswap(paths):
+    if not paths:
         return None
-    return [f.name for f in files]
+    return paths
