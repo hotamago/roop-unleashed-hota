@@ -1,4 +1,5 @@
 import os
+import shutil
 import time
 import warnings
 import gradio as gr
@@ -36,7 +37,7 @@ def run():
     prepare_environment()
 
     set_display_ui(show_msg)
-    if roop.globals.CFG.provider == "cuda" and util.has_cuda_device() == False:
+    if roop.globals.CFG.provider in ("cuda", "tensorrt") and util.has_cuda_device() == False:
        roop.globals.CFG.provider = "cpu"
 
     roop.globals.execution_providers = decode_execution_providers([roop.globals.CFG.provider])
@@ -421,6 +422,16 @@ def run():
     """
 
     while run_server:
+        # Clean Gradio temp dir on each (re)start to prevent asyncio event loop
+        # mismatch errors caused by stale asyncio.locks.Event objects from a
+        # previous server instance referencing the old event loop.
+        try:
+            gradio_temp = os.environ.get("GRADIO_TEMP_DIR", "")
+            if gradio_temp and os.path.exists(gradio_temp):
+                shutil.rmtree(gradio_temp, ignore_errors=True)
+                os.makedirs(gradio_temp, exist_ok=True)
+        except Exception:
+            pass
         server_name = roop.globals.CFG.server_name
         if server_name is None or len(server_name) < 1:
             server_name = None
