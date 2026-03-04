@@ -137,7 +137,7 @@ class ProcessMgr():
             self.options.imagemask = cv2.cvtColor(self.options.imagemask, cv2.COLOR_RGBA2GRAY)
             if np.any(self.options.imagemask):
                 mo = self.input_face_datas[0].faces[0].mask_offsets
-                self.options.imagemask = self.blur_area(self.options.imagemask, mo[4], mo[5])
+                self.options.imagemask = self.blur_area(self.options.imagemask, mo[4])
                 self.options.imagemask = self.options.imagemask.astype(np.float32) / 255
                 self.options.imagemask = cv2.cvtColor(self.options.imagemask, cv2.COLOR_GRAY2RGB)
             else:
@@ -530,7 +530,7 @@ class ProcessMgr():
         orig_width = fake_frame.shape[1]
         if orig_width != upscale:
             fake_frame = cv2.resize(fake_frame, (upscale, upscale), cv2.INTER_CUBIC)
-        mask_offsets = (0, 0, 0, 0, 1, 20) if inputface is None else inputface.mask_offsets
+        mask_offsets = [0, 0, 0, 0, 20.0, 10.0] if inputface is None else inputface.mask_offsets
 
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
@@ -540,7 +540,7 @@ class ProcessMgr():
 
         if self.options.restore_original_mouth:
             mouth_cutout, mouth_bb, mouth_polygon = self.create_mouth_mask(target_face, frame)
-            result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon)
+            result = self.apply_mouth_area(result, mouth_cutout, mouth_bb, mouth_polygon, mask_offsets[5])
 
         if rotation_action is not None:
             fake_frame = self.auto_unrotate_frame(result, rotation_action)
@@ -591,7 +591,7 @@ class ProcessMgr():
         img_matte = cv2.warpAffine(img_matte, IM, (target_img.shape[1], target_img.shape[0]), flags=cv2.INTER_NEAREST, borderValue=0.0)
         img_matte[:1, :] = img_matte[-1:, :] = img_matte[:, :1] = img_matte[:, -1:] = 0
 
-        img_matte = self.blur_area(img_matte, mask_offsets[4], mask_offsets[5])
+        img_matte = self.blur_area(img_matte, mask_offsets[4])
         img_matte = img_matte.astype(np.float32) / 255
         face_matte = face_matte.astype(np.float32) / 255
         img_matte = np.minimum(face_matte, img_matte)
@@ -615,18 +615,21 @@ class ProcessMgr():
         return paste_face.astype(np.uint8)
 
 
-    def blur_area(self, img_matte, num_erosion_iterations, blur_amount):
+    def blur_area(self, img_matte, face_mask_blend):
+        if face_mask_blend <= 0:
+            return img_matte
         mask_h_inds, mask_w_inds = np.where(img_matte == 255)
+        if len(mask_h_inds) == 0 or len(mask_w_inds) == 0:
+            return img_matte
         mask_h = np.max(mask_h_inds) - np.min(mask_h_inds)
         mask_w = np.max(mask_w_inds) - np.min(mask_w_inds)
         mask_size = int(np.sqrt(mask_h * mask_w))
-        k = max(mask_size // (blur_amount // 2), blur_amount // 2)
-        kernel = np.ones((k, k), np.uint8)
-        img_matte = cv2.erode(img_matte, kernel, iterations=num_erosion_iterations)
-        k = max(mask_size // blur_amount, blur_amount // 5)
-        kernel_size = (k, k)
-        blur_size = tuple(2 * i + 1 for i in kernel_size)
-        return cv2.GaussianBlur(img_matte, blur_size, 0)
+        # blend_px scales with both mask size and user blend amount (0-100)
+        blend_px = max(1, int(mask_size * face_mask_blend / 200))
+        kernel = np.ones((blend_px, blend_px), np.uint8)
+        img_matte = cv2.erode(img_matte, kernel, iterations=1)
+        blur_size = blend_px * 2 + 1
+        return cv2.GaussianBlur(img_matte, (blur_size, blur_size), 0)
 
 
     def prepare_crop_frame(self, swap_frame):
@@ -715,7 +718,7 @@ class ProcessMgr():
         max_val = np.max(mask)
         return mask / max_val if max_val > 0 else mask
 
-    def apply_mouth_area(self, frame:np.ndarray, mouth_cutout:np.ndarray, mouth_box:tuple, mouth_polygon=None) -> np.ndarray:
+    def apply_mouth_area(self, frame:np.ndarray, mouth_cutout:np.ndarray, mouth_box:tuple, mouth_polygon=None, mouth_blend:float=10.0) -> np.ndarray:
         min_x, min_y, max_x, max_y = mouth_box
         box_width = max_x - min_x
         box_height = max_y - min_y
@@ -736,14 +739,18 @@ class ProcessMgr():
                 hull = cv2.convexHull(scaled_pts)
                 mask = np.zeros(resized_mouth_cutout.shape[:2], dtype=np.uint8)
                 cv2.fillConvexPoly(mask, hull, 255)
-                # Small fixed dilation ensures lip extremes are fully inside the mask.
-                # Only a 3-px anti-aliasing blur follows — no wide feather — so the
-                # interior stays at mask≈1.0 and both mouths never mix visibly.
-                dilate_px = max(2, min(6, box_width // 20))
-                dilate_kernel = cv2.getStructuringElement(
-                    cv2.MORPH_ELLIPSE, (dilate_px * 2, dilate_px * 2))
-                mask = cv2.dilate(mask, dilate_kernel, iterations=1)
-                mask = cv2.GaussianBlur(mask.astype(np.float32), (3, 3), 0)
+                # mouth_blend (0-30) controls dilation and edge softness.
+                # At 0: binary mask with only 3px anti-alias blur (hardest edge).
+                # Higher values expand the mask outward and soften the transition.
+                dilate_px = max(0, min(int(mouth_blend), box_width // 4))
+                if dilate_px > 0:
+                    dilate_kernel = cv2.getStructuringElement(
+                        cv2.MORPH_ELLIPSE, (dilate_px * 2, dilate_px * 2))
+                    mask = cv2.dilate(mask, dilate_kernel, iterations=1)
+                    blur_k = dilate_px * 2 + 1
+                else:
+                    blur_k = 3
+                mask = cv2.GaussianBlur(mask.astype(np.float32), (blur_k, blur_k), 0)
                 mask /= 255.0
             else:
                 feather_amount = max(1, min(30, box_width // 15, box_height // 15))
