@@ -393,7 +393,7 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
                 roop.globals.INPUT_FACESETS.append(face_set)
                 
     progress(1.0)
-    if len(ui.globals.ui_input_thumbs) > 6:
+    if len(ui.globals.ui_input_thumbs) >= 6:
         gr.Warning(
             "You have more than 6 input faces. Consider using the Face Management tab "
             "to consolidate multiple images of the same source into a single faceset file."
