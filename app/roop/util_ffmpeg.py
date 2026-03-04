@@ -139,6 +139,21 @@ def crop_media(input_path: str, output_path: str,
     return run_ffmpeg(['-i', input_path, '-vf', crop_filter, '-c:a', 'copy', output_path])
 
 
+def apply_media_transforms(input_path: str, output_path: str,
+                           vf_filters: list, is_video: bool) -> bool:
+    """Apply a list of -vf filters in a single ffmpeg pass."""
+    if not vf_filters:
+        return False
+    vf = ','.join(vf_filters)
+    args = ['-i', input_path, '-vf', vf]
+    if is_video:
+        args += ['-c:v', roop.globals.video_encoder,
+                 '-crf', str(roop.globals.video_quality),
+                 '-c:a', 'copy']
+    args.append(output_path)
+    return run_ffmpeg(args)
+
+
 def restore_audio(intermediate_video: str, original_video: str, trim_frame_start, trim_frame_end, final_video : str) -> None:
 	fps = util.detect_fps(original_video)
 	commands = [ '-i', intermediate_video ]
