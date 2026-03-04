@@ -707,8 +707,9 @@ class ProcessMgr():
     def create_feathered_mask(self, shape, feather_amount=30):
         mask = np.zeros(shape[:2], dtype=np.float32)
         center = (shape[1] // 2, shape[0] // 2)
-        # Clamp axes to at least 1 so OpenCV never receives a non-positive value
-        axes = (max(1, shape[1] // 2 - feather_amount), max(1, shape[0] // 2 - feather_amount))
+        # Use full extent so lip-adjacent pixels are fully inside the ellipse.
+        # Feathering then falls off only at the bounding-box edge, not into the lips.
+        axes = (max(1, shape[1] // 2), max(1, shape[0] // 2))
         cv2.ellipse(mask, center, axes, 0, 0, 360, 1, -1)
         mask = cv2.GaussianBlur(mask, (feather_amount * 2 + 1, feather_amount * 2 + 1), 0)
         max_val = np.max(mask)
@@ -734,10 +735,15 @@ class ProcessMgr():
                 scale_y = box_height / max(1, mouth_cutout.shape[0])
                 scaled_pts = (mouth_polygon * [scale_x, scale_y]).astype(np.int32)
                 hull = cv2.convexHull(scaled_pts)
-                mask = np.zeros(resized_mouth_cutout.shape[:2], dtype=np.float32)
-                cv2.fillConvexPoly(mask, hull, 1.0)
+                mask = np.zeros(resized_mouth_cutout.shape[:2], dtype=np.uint8)
+                cv2.fillConvexPoly(mask, hull, 255)
+                # Dilate outward before blurring so the transition zone falls in the
+                # padding area rather than eroding inward into the lips/tongue.
+                dilate_kernel = cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE, (feather_amount, feather_amount))
+                mask = cv2.dilate(mask, dilate_kernel, iterations=1)
                 ksize = feather_amount * 2 + 1
-                mask = cv2.GaussianBlur(mask, (ksize, ksize), 0)
+                mask = cv2.GaussianBlur(mask.astype(np.float32), (ksize, ksize), 0)
                 max_val = np.max(mask)
                 if max_val > 0:
                     mask = mask / max_val
@@ -747,6 +753,14 @@ class ProcessMgr():
             mask = mask[:, :, np.newaxis]
             blended = (color_corrected_mouth * mask + roi * (1 - mask)).astype(np.uint8)
             frame[min_y:max_y, min_x:max_x] = blended
+
+            if self.options.show_face_area_overlay:
+                # Draw a red overlay on the mouth restore region so it's visible
+                # alongside the green face-swap overlay
+                red_overlay = np.zeros_like(frame[min_y:max_y, min_x:max_x])
+                red_overlay[:, :, 2] = 255  # BGR red
+                frame[min_y:max_y, min_x:max_x] = cv2.addWeighted(
+                    frame[min_y:max_y, min_x:max_x], 0.5, red_overlay, 0.5, 0)
         except Exception as e:
             print(f'Error in apply_mouth_area: {e}')
         return frame
