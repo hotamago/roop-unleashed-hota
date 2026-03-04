@@ -48,8 +48,8 @@ def faceswap_tab():
         with gr.Row(variant='panel'):
             with gr.Column(scale=2):
                 with gr.Row():
-                    input_faces = gr.Gallery(label="Input faces gallery", allow_preview=False, preview=False, height=200, columns=64, object_fit="contain", interactive=False)
-                    target_faces = gr.Gallery(label="Target faces gallery", allow_preview=False, preview=False, height=200, columns=64, object_fit="contain", interactive=False)
+                    input_faces = gr.Gallery(label="Input faces gallery", allow_preview=False, preview=False, height=None, columns=2, object_fit="contain", interactive=False)
+                    target_faces = gr.Gallery(label="Target faces gallery", allow_preview=False, preview=False, height=None, columns=2, object_fit="contain", interactive=False)
                 with gr.Row():
                     bt_move_left_input = gr.Button("⬅ Move left", size='sm')
                     bt_move_right_input = gr.Button("➡ Move right", size='sm')
@@ -393,7 +393,12 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
                 roop.globals.INPUT_FACESETS.append(face_set)
                 
     progress(1.0)
-    return gr.Column(visible=False), None, ui.globals.ui_input_thumbs,None
+    if len(ui.globals.ui_input_thumbs) > 6:
+        gr.Warning(
+            "You have more than 6 input faces. Consider using the Face Management tab "
+            "to consolidate multiple images of the same source into a single faceset file."
+        )
+    return gr.Column(visible=False), None, ui.globals.ui_input_thumbs, None
 
 
 def on_select_input_face(evt: gr.SelectData):
