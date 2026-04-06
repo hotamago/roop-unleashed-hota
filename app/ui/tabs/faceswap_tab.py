@@ -9,6 +9,7 @@ from roop.capturer import get_video_frame, get_video_frame_total, get_image_fram
 from roop.ProcessEntry import ProcessEntry
 from roop.ProcessOptions import ProcessOptions
 from roop.FaceSet import FaceSet
+from roop.progress_status import get_processing_status_markdown, set_memory_status, set_processing_message, start_processing_status
 
 last_image = None
 
@@ -252,6 +253,9 @@ def faceswap_tab():
                 gr.Button("👀 Open Output Folder", size='sm').click(fn=lambda: util.open_folder(roop.globals.output_path))
             with gr.Column(scale=2):
                 output_method = gr.Dropdown(["File","Virtual Camera", "Both"], value=roop.globals.CFG.output_method, label="Select Output Method", interactive=True)
+        with gr.Row(variant='panel'):
+            processing_info = gr.Markdown(get_processing_status_markdown())
+            processing_timer = gr.Timer(1.0, active=True)
 
     # Store saveable component refs in ui.globals for cross-tab access (Save/Load session)
     ui.globals.ui_selected_face_detection = selected_face_detection
@@ -279,6 +283,7 @@ def faceswap_tab():
     ui.globals.ui_mouth_bottom_scale = mouth_bottom_scale
     ui.globals.ui_mouth_left_scale = mouth_left_scale
     ui.globals.ui_mouth_right_scale = mouth_right_scale
+    ui.globals.ui_processing_info = processing_info
 
     previewinputs = [preview_frame_num, bt_destfiles, fake_preview, ui.globals.ui_selected_enhancer, selected_face_detection,
                         max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, no_face_action, vr_mode, autorotate, maskimage, chk_showmaskoffsets, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale]
@@ -326,9 +331,10 @@ def faceswap_tab():
     start_event = bt_start.click(fn=start_swap,
         inputs=[output_method, ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
                     roop.globals.skip_audio, max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text,video_swapping_method, no_face_action, vr_mode, autorotate, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale, maskimage],
-        outputs=[bt_start, bt_stop], show_progress='full')
+        outputs=[bt_start, bt_stop, processing_info], show_progress='full')
 
-    bt_stop.click(fn=stop_swap, cancels=[start_event], outputs=[bt_start, bt_stop], queue=False)
+    bt_stop.click(fn=stop_swap, cancels=[start_event], outputs=[bt_start, bt_stop, processing_info], queue=False)
+    processing_timer.tick(fn=get_runtime_processing_info, outputs=[processing_info], show_progress='hidden', queue=False)
 
     bt_refresh_preview.click(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)            
     bt_toggle_masking.click(fn=on_toggle_masking, inputs=[previewimage, maskimage], outputs=[previewimage, maskimage])            
@@ -655,6 +661,10 @@ def on_toggle_masking(previewimage, mask):
 def gen_processing_text(start, end):
     return f'Processing frame range [{start} - {end}]'
 
+
+def get_runtime_processing_info():
+    return get_processing_status_markdown()
+
 def on_set_frame(sender:str, frame_num):
     global selected_preview_index, list_files_process
     
@@ -746,7 +756,8 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     global is_processing, list_files_process
 
     if list_files_process is None or len(list_files_process) <= 0:
-        return gr.Button(variant="primary"), None
+        yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown()
+        return
     
     if roop.globals.CFG.clear_output:
         shutil.rmtree(roop.globals.output_path, ignore_errors=True)
@@ -774,26 +785,31 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     if roop.globals.face_swap_mode == 'selected':
         if len(roop.globals.TARGET_FACES) < 1:
             gr.Error('No Target Face selected!')
-            return gr.Button(variant="primary"), None
+            yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown()
+            return
 
     is_processing = True
-    yield gr.Button(variant="secondary", interactive=False), gr.Button(variant="primary", interactive=True)
+    start_processing_status("Preparing faceswap job", total_files=len(list_files_process))
+    yield gr.Button(variant="secondary", interactive=False), gr.Button(variant="primary", interactive=True), get_processing_status_markdown()
     roop.globals.execution_threads = roop.globals.CFG.max_threads
     roop.globals.video_encoder = roop.globals.CFG.output_video_codec
     roop.globals.video_quality = roop.globals.CFG.video_quality
     roop.globals.max_memory = roop.globals.CFG.max_ram_gb if roop.globals.CFG.max_ram_gb > 0 else None
     roop.globals.max_vram = roop.globals.CFG.max_vram_gb if roop.globals.CFG.max_vram_gb > 0 else None
-    gr.Info(describe_memory_plan(resolve_memory_plan()))
+    set_memory_status(describe_memory_plan(resolve_memory_plan()))
+    set_processing_message("Preparing faceswap job", stage="prepare", detail="Resolving memory budget and worker plan", force_log=True)
+    gr.Info(roop.globals.runtime_memory_status)
 
     batch_process_regular(output_method, list_files_process, mask_engine, clip_text, processing_method, imagemask, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX)
     is_processing = False
-    yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False)
+    yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown()
 
 
 def stop_swap():
     roop.globals.processing = False
+    set_processing_message('Stopping... waiting for workers to finish', status='stopping', detail='The current stage will stop as soon as workers drain', force_log=True)
     gr.Info('Aborting processing - please wait for the remaining threads to be stopped')
-    return gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False)
+    return gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown()
 
 
 def on_destfiles_changed(destfiles):

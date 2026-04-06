@@ -2,6 +2,7 @@ import os
 import cv2 
 import numpy as np
 import psutil
+import time
 
 from roop.ProcessOptions import ProcessOptions
 
@@ -18,6 +19,7 @@ from tqdm import tqdm
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
 from roop.StreamWriter import StreamWriter
 import roop.globals
+from roop.progress_status import format_duration, get_processing_status_line, publish_processing_progress
 
 
 
@@ -87,6 +89,12 @@ class ProcessMgr():
         self.last_swapped_frame = None
         self.output_to_file = None
         self.output_to_cam = None
+        self.progress_stage = "processing"
+        self.progress_target_name = None
+        self.progress_file_index = None
+        self.progress_file_total = None
+        self.progress_unit = "frames"
+        self.progress_started_at = None
 
         if progress is not None:
             self.progress_gradio = progress
@@ -378,6 +386,8 @@ class ProcessMgr():
         progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
         self.total_frames = len(source_files)
         self.num_threads = threads
+        if self.progress_started_at is None:
+            self.progress_started_at = time.time()
         with tqdm(total=self.total_frames, desc='Processing', unit='frame', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
             with ThreadPoolExecutor(max_workers=threads) as executor:
                 futures = []
@@ -484,6 +494,8 @@ class ProcessMgr():
         self.total_frames = frame_count
         self.num_threads = threads
         self.processing_threads = self.num_threads
+        if self.progress_started_at is None:
+            self.progress_started_at = time.time()
         self.frames_queue = []
         self.processed_queue = []
         for _ in range(threads):
@@ -531,13 +543,49 @@ class ProcessMgr():
     def update_progress(self, progress: Any = None) -> None:
         process = psutil.Process(os.getpid())
         memory_usage = process.memory_info().rss / 1024 / 1024 / 1024
-        progress.set_postfix({
-            'memory_usage': '{:.2f}'.format(memory_usage).zfill(5) + 'GB',
-            'execution_threads': self.num_threads
-        })
         progress.update(1)
+        elapsed = progress.format_dict.get("elapsed")
+        rate = progress.format_dict.get("rate")
+        if (rate is None or rate <= 0) and elapsed and progress.n > 0:
+            rate = progress.n / max(elapsed, 1e-9)
+        eta = None
+        if rate is not None and rate > 0 and self.total_frames > 0:
+            eta = max(self.total_frames - progress.n, 0) / rate
+        postfix = {
+            'memory': '{:.2f}'.format(memory_usage).zfill(5) + 'GB',
+            'workers': self.num_threads,
+            'stage': self.progress_stage.replace('_', ' ')
+        }
+        if eta is not None:
+            postfix['eta'] = format_duration(eta)
+        if self.progress_target_name:
+            postfix['file'] = os.path.basename(self.progress_target_name)
+        progress.set_postfix(postfix)
+        publish_processing_progress(
+            stage=self.progress_stage,
+            completed=progress.n,
+            total=self.total_frames,
+            unit=self.progress_unit,
+            target_name=self.progress_target_name,
+            file_index=self.progress_file_index,
+            total_files=self.progress_file_total,
+            rate=rate,
+            elapsed=elapsed,
+            eta=eta,
+            detail=f"CPU workers: {self.num_threads}",
+            memory_status=roop.globals.runtime_memory_status,
+        )
         if self.progress_gradio is not None:
-            self.progress_gradio((progress.n, self.total_frames), desc='Processing', total=self.total_frames, unit='frames')
+            self.progress_gradio((progress.n, self.total_frames), desc=get_processing_status_line(), total=self.total_frames, unit=self.progress_unit)
+
+
+    def set_progress_context(self, stage, target_name=None, file_index=None, total_files=None, unit='frames'):
+        self.progress_stage = stage
+        self.progress_target_name = target_name
+        self.progress_file_index = file_index
+        self.progress_file_total = total_files
+        self.progress_unit = unit
+        self.progress_started_at = time.time()
 
 
     def process_frame(self, frame:Frame):

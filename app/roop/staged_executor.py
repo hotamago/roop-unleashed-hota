@@ -17,6 +17,7 @@ from roop.ProcessOptions import ProcessOptions
 from roop.capturer import get_image_frame, get_video_frame_total
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
 from roop.memory import describe_memory_plan, resolve_memory_plan
+from roop.progress_status import get_processing_status_line, publish_processing_progress, set_memory_status
 
 try:
     from roop.StreamWriter import StreamWriter
@@ -157,11 +158,36 @@ class StagedBatchExecutor:
         self.swap_enabled = "faceswap" in options.processors
         self.mask_name = next((name for name in options.processors if name.startswith("mask_")), None)
         self.enhancer_name = next((name for name in options.processors if name not in ("faceswap", self.mask_name)), None)
+        self.total_files = 0
+        self.current_entry = None
+        self.current_file_index = None
+        self.current_chunk_index = None
+        self.current_total_chunks = None
 
 
-    def update_progress(self, desc):
+    def update_progress(self, stage, detail=None, step_completed=None, step_total=None, step_unit="items", force_log=False):
+        target_name = None
+        if self.current_entry is not None:
+            target_name = self.current_entry.filename
+        publish_processing_progress(
+            stage=stage,
+            completed=self.completed_units,
+            total=self.total_units,
+            unit="units",
+            target_name=target_name,
+            file_index=self.current_file_index,
+            total_files=self.total_files,
+            chunk_index=self.current_chunk_index,
+            total_chunks=self.current_total_chunks,
+            step_completed=step_completed,
+            step_total=step_total,
+            step_unit=step_unit,
+            detail=detail,
+            memory_status=roop.globals.runtime_memory_status,
+            force_log=force_log,
+        )
         if self.progress is not None:
-            self.progress((self.completed_units, self.total_units), desc=desc, total=self.total_units, unit='frames')
+            self.progress((self.completed_units, self.total_units), desc=get_processing_status_line(), total=self.total_units, unit='units')
 
 
     def build_stage_options(self, processor_names):
@@ -202,9 +228,14 @@ class StagedBatchExecutor:
 
     def run(self, files):
         self.count_total_units(files)
+        self.total_files = len(files)
         for index, entry in enumerate(files):
             if not roop.globals.processing:
                 break
+            self.current_entry = entry
+            self.current_file_index = index + 1
+            self.current_chunk_index = None
+            self.current_total_chunks = None
             if util.has_image_extension(entry.filename):
                 self.process_image_entry(entry, index)
             else:
@@ -215,17 +246,20 @@ class StagedBatchExecutor:
         image = get_image_frame(entry.filename)
         if image is None:
             self.completed_units += 1
-            self.update_progress(f"Skipping unreadable image {os.path.basename(entry.filename)}")
+            self.update_progress("image", detail=f"Skipping unreadable image {os.path.basename(entry.filename)}", step_completed=1, step_total=1, step_unit="image", force_log=True)
             return
         height, width = image.shape[:2]
         memory_plan = resolve_memory_plan(width, height)
+        set_memory_status(describe_memory_plan(memory_plan))
         job_dir, manifest = self.prepare_job(entry, memory_plan)
+        self.update_progress("image", detail="Preparing image stages", step_completed=0, step_total=1, step_unit="image", force_log=True)
         if manifest.get("status") == "completed" and os.path.isfile(entry.finalname):
             self.completed_units += 1
-            self.update_progress(f"Skipping cached image {os.path.basename(entry.filename)}")
+            self.update_progress("resume", detail=f"Skipping cached image {os.path.basename(entry.filename)}", step_completed=1, step_total=1, step_unit="image", force_log=True)
             return
 
         detect_dir = job_dir / "detect"
+        self.update_progress("detect", detail="Detecting and aligning faces", step_completed=0, step_total=1, step_unit="image")
         task_meta = self.ensure_detect_cache(job_dir, detect_dir, image, 0)
         chunk_meta = {"frames": [task_meta]}
         chunk_state = {
@@ -237,16 +271,20 @@ class StagedBatchExecutor:
                 "composite": False,
             }
         }
+        self.update_progress("swap", detail="Running face swap", step_completed=0, step_total=max(len(task_meta["tasks"]), 1), step_unit="faces")
         self.ensure_swap_stage(job_dir, chunk_meta, chunk_state, memory_plan)
+        self.update_progress("mask", detail="Applying mask stage", step_completed=0, step_total=max(len(task_meta["tasks"]), 1), step_unit="faces")
         self.ensure_mask_stage(job_dir, chunk_meta, chunk_state, memory_plan)
+        self.update_progress("enhance", detail="Applying enhancement stage", step_completed=0, step_total=max(len(task_meta["tasks"]), 1), step_unit="faces")
         self.ensure_enhance_stage(job_dir, chunk_meta, chunk_state, memory_plan)
+        self.update_progress("composite", detail="Compositing final image", step_completed=0, step_total=1, step_unit="image")
         result = self.compose_image_from_cache(image, job_dir, task_meta)
         if result is not None:
             write_image(Path(entry.finalname), result)
         manifest["status"] = "completed"
         write_json(job_dir / "manifest.json", manifest)
         self.completed_units += 1
-        self.update_progress(f"Processed {os.path.basename(entry.filename)}")
+        self.update_progress("image", detail=f"Processed {os.path.basename(entry.filename)}", step_completed=1, step_total=1, step_unit="image", force_log=True)
         self.cleanup_job_dir(job_dir)
 
 
@@ -256,16 +294,19 @@ class StagedBatchExecutor:
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
         memory_plan = resolve_memory_plan(width, height)
-        roop.globals.runtime_memory_status = describe_memory_plan(memory_plan)
+        set_memory_status(describe_memory_plan(memory_plan))
         job_dir, manifest = self.prepare_job(entry, memory_plan)
         endframe = entry.endframe or get_video_frame_total(entry.filename)
         chunk_size = max(8, memory_plan["chunk_size"])
         chunks = [(start, min(start + chunk_size, endframe)) for start in range(entry.startframe, endframe, chunk_size)]
+        self.current_total_chunks = len(chunks)
+        self.update_progress("prepare", detail=f"Prepared {len(chunks)} chunk(s) for staged processing", step_completed=0, step_total=max(endframe - entry.startframe, 1), step_unit="frames", force_log=True)
 
         chunk_outputs = []
         for chunk_index, (chunk_start, chunk_end) in enumerate(chunks):
             if not roop.globals.processing:
                 break
+            self.current_chunk_index = chunk_index + 1
             chunk_key = f"{chunk_index:04d}_{chunk_start:08d}_{chunk_end:08d}"
             chunk_dir = job_dir / "chunks" / chunk_key
             chunk_video = chunk_dir / f"{chunk_key}.mp4"
@@ -284,7 +325,7 @@ class StagedBatchExecutor:
             if chunk_state["stages"]["composite"] and chunk_video.exists():
                 chunk_outputs.append(str(chunk_video))
                 self.completed_units += max(chunk_end - chunk_start, 1)
-                self.update_progress(f"Skipping cached chunk {chunk_key}")
+                self.update_progress("resume", detail=f"Skipping cached chunk {chunk_index + 1}/{len(chunks)}", step_completed=max(chunk_end - chunk_start, 1), step_total=max(chunk_end - chunk_start, 1), step_unit="frames", force_log=True)
                 continue
 
             chunk_meta = self.ensure_chunk_detect(entry.filename, chunk_dir, chunk_start, chunk_end, memory_plan, chunk_state)
@@ -311,6 +352,7 @@ class StagedBatchExecutor:
 
         if self.output_method != "Virtual Camera" and chunk_outputs:
             joined_video = job_dir / "joined_video.mp4"
+            self.update_progress("mux", detail=f"Joining {len(chunk_outputs)} chunk(s)", step_completed=len(chunk_outputs), step_total=len(chunk_outputs), step_unit="chunks", force_log=True)
             ffmpeg.join_videos(chunk_outputs, str(joined_video), True)
             destination = util.replace_template(entry.finalname, index=index)
             Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
@@ -349,6 +391,7 @@ class StagedBatchExecutor:
         detect_dir.mkdir(parents=True, exist_ok=True)
         plan_path = detect_dir / "plan.json"
         if plan_path.exists():
+            self.update_progress("detect", detail="Reusing cached detect plan", step_completed=1, step_total=1, step_unit="image")
             return read_json(plan_path)
         planner = ProcessMgr(None)
         planner.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, self.build_stage_options([]))
@@ -363,6 +406,7 @@ class StagedBatchExecutor:
             task_meta["aligned_path"] = aligned_path.name
             frame_meta["tasks"].append(task_meta)
         write_json(plan_path, frame_meta)
+        self.update_progress("detect", detail="Detection cache created", step_completed=1, step_total=1, step_unit="image")
         return frame_meta
 
 
@@ -371,6 +415,8 @@ class StagedBatchExecutor:
         plan_path = chunk_dir / "plan.json"
         if plan_path.exists():
             chunk_state["stages"]["detect"] = True
+            frame_total = max(chunk_end - chunk_start, 1)
+            self.update_progress("detect", detail="Reusing detect cache", step_completed=frame_total, step_total=frame_total, step_unit="frames")
             return read_json(plan_path)
 
         chunk_dir.mkdir(parents=True, exist_ok=True)
@@ -378,6 +424,8 @@ class StagedBatchExecutor:
         planner = ProcessMgr(None)
         planner.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, self.build_stage_options([]))
         chunk_meta = {"start": chunk_start, "end": chunk_end, "frames": []}
+        processed_frames = 0
+        total_frames = max(chunk_end - chunk_start, 1)
         for frame_number, frame in iter_video_chunk(video_path, chunk_start, chunk_end, memory_plan["prefetch_frames"]):
             frame_plan = planner.build_frame_plan(frame)
             frame_meta = {"frame_number": frame_number, "fallback": frame_plan["fallback"], "tasks": []}
@@ -390,6 +438,8 @@ class StagedBatchExecutor:
                 task_meta["aligned_path"] = aligned_path.name
                 frame_meta["tasks"].append(task_meta)
             chunk_meta["frames"].append(frame_meta)
+            processed_frames += 1
+            self.update_progress("detect", detail="Detecting and aligning faces", step_completed=processed_frames, step_total=total_frames, step_unit="frames")
         write_json(plan_path, chunk_meta)
         chunk_state["stages"]["detect"] = True
         return chunk_meta
@@ -408,23 +458,32 @@ class StagedBatchExecutor:
             chunk_state["stages"]["swap"] = True
             return
         swap_dir = chunk_dir / "swap"
-        expected = [swap_dir / f"{task_meta['cache_key']}.png" for _, task_meta in self.flatten_tasks(chunk_meta)]
+        flat_tasks = self.flatten_tasks(chunk_meta)
+        expected = [swap_dir / f"{task_meta['cache_key']}.png" for _, task_meta in flat_tasks]
+        total_tasks = len(flat_tasks)
         if chunk_state["stages"]["swap"] or (expected and all(path.exists() for path in expected)):
             chunk_state["stages"]["swap"] = True
+            if total_tasks > 0:
+                self.update_progress("swap", detail="Reusing swap cache", step_completed=total_tasks, step_total=total_tasks, step_unit="faces")
             return
         detect_dir = chunk_dir / "detect"
         swap_dir.mkdir(parents=True, exist_ok=True)
         swap_mgr = ProcessMgr(None)
         swap_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, self.build_stage_options(["faceswap"]))
         processor = swap_mgr.processors[0]
-        for _, task_meta in self.flatten_tasks(chunk_meta):
+        processed_tasks = 0
+        for _, task_meta in flat_tasks:
             cache_path = swap_dir / f"{task_meta['cache_key']}.png"
             if cache_path.exists():
+                processed_tasks += 1
+                self.update_progress("swap", detail="Reusing cached swap crops", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
                 continue
             task = dict(task_meta)
             task["aligned_frame"] = read_image(detect_dir / task_meta["aligned_path"])
             fake_frame = swap_mgr.run_swap_task(task, processor, memory_plan["swap_batch_size"])
             write_image(cache_path, fake_frame)
+            processed_tasks += 1
+            self.update_progress("swap", detail="Running face swap", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
         swap_mgr.release_resources()
         chunk_state["stages"]["swap"] = True
 
@@ -434,9 +493,13 @@ class StagedBatchExecutor:
             chunk_state["stages"]["mask"] = True
             return
         mask_dir = chunk_dir / "mask"
-        expected = [mask_dir / f"{task_meta['cache_key']}.png" for _, task_meta in self.flatten_tasks(chunk_meta)]
+        flat_tasks = self.flatten_tasks(chunk_meta)
+        expected = [mask_dir / f"{task_meta['cache_key']}.png" for _, task_meta in flat_tasks]
+        total_tasks = len(flat_tasks)
         if chunk_state["stages"]["mask"] or (expected and all(path.exists() for path in expected)):
             chunk_state["stages"]["mask"] = True
+            if total_tasks > 0:
+                self.update_progress("mask", detail="Reusing mask cache", step_completed=total_tasks, step_total=total_tasks, step_unit="faces")
             return
         detect_dir = chunk_dir / "detect"
         swap_dir = chunk_dir / "swap"
@@ -444,7 +507,7 @@ class StagedBatchExecutor:
         mask_mgr = ProcessMgr(None)
         mask_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, self.build_stage_options([self.mask_name]))
         processor = mask_mgr.processors[0]
-        flat_tasks = self.flatten_tasks(chunk_meta)
+        processed_tasks = 0
         if getattr(processor, "supports_batch", False):
             for batch in chunked(flat_tasks, memory_plan["mask_batch_size"]):
                 originals = [read_image(detect_dir / task_meta["aligned_path"]) for _, task_meta in batch]
@@ -452,6 +515,8 @@ class StagedBatchExecutor:
                 for (_, task_meta), original, mask in zip(batch, originals, masks):
                     cache_path = mask_dir / f"{task_meta['cache_key']}.png"
                     if cache_path.exists():
+                        processed_tasks += 1
+                        self.update_progress("mask", detail="Reusing cached masks", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
                         continue
                     current_frame = read_image(swap_dir / f"{task_meta['cache_key']}.png")
                     mask = cv2.resize(mask, (current_frame.shape[1], current_frame.shape[0]))
@@ -459,16 +524,22 @@ class StagedBatchExecutor:
                     result = (1 - mask) * current_frame.astype(np.float32)
                     result += mask * original.astype(np.float32)
                     write_image(cache_path, np.uint8(result))
+                    processed_tasks += 1
+                    self.update_progress("mask", detail="Applying face mask stage", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
         else:
             for _, task_meta in flat_tasks:
                 cache_path = mask_dir / f"{task_meta['cache_key']}.png"
                 if cache_path.exists():
+                    processed_tasks += 1
+                    self.update_progress("mask", detail="Reusing cached masks", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
                     continue
                 task = dict(task_meta)
                 task["aligned_frame"] = read_image(detect_dir / task_meta["aligned_path"])
                 current_frame = read_image(swap_dir / f"{task_meta['cache_key']}.png")
                 result = mask_mgr.run_mask_task(task, current_frame, processor)
                 write_image(cache_path, result)
+                processed_tasks += 1
+                self.update_progress("mask", detail="Applying face mask stage", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
         mask_mgr.release_resources()
         chunk_state["stages"]["mask"] = True
 
@@ -478,16 +549,20 @@ class StagedBatchExecutor:
             chunk_state["stages"]["enhance"] = True
             return
         enhance_dir = chunk_dir / "enhance"
-        expected = [enhance_dir / f"{task_meta['cache_key']}.png" for _, task_meta in self.flatten_tasks(chunk_meta)]
+        flat_tasks = self.flatten_tasks(chunk_meta)
+        expected = [enhance_dir / f"{task_meta['cache_key']}.png" for _, task_meta in flat_tasks]
+        total_tasks = len(flat_tasks)
         if chunk_state["stages"]["enhance"] or (expected and all(path.exists() for path in expected)):
             chunk_state["stages"]["enhance"] = True
+            if total_tasks > 0:
+                self.update_progress("enhance", detail="Reusing enhance cache", step_completed=total_tasks, step_total=total_tasks, step_unit="faces")
             return
         input_dir = chunk_dir / ("mask" if self.mask_name else "swap")
         enhance_dir.mkdir(parents=True, exist_ok=True)
         enhance_mgr = ProcessMgr(None)
         enhance_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, self.build_stage_options([self.enhancer_name]))
         processor = enhance_mgr.processors[0]
-        flat_tasks = self.flatten_tasks(chunk_meta)
+        processed_tasks = 0
         if getattr(processor, "supports_batch", False):
             for batch in chunked(flat_tasks, memory_plan["enhance_batch_size"]):
                 current_frames = [read_image(input_dir / f"{task_meta['cache_key']}.png") for _, task_meta in batch]
@@ -497,17 +572,25 @@ class StagedBatchExecutor:
                 for (_, task_meta), enhanced_frame in zip(batch, enhanced_frames):
                     cache_path = enhance_dir / f"{task_meta['cache_key']}.png"
                     if cache_path.exists():
+                        processed_tasks += 1
+                        self.update_progress("enhance", detail="Reusing cached enhanced crops", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
                         continue
                     write_image(cache_path, enhanced_frame)
+                    processed_tasks += 1
+                    self.update_progress("enhance", detail="Running enhancement stage", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
         else:
             for _, task_meta in flat_tasks:
                 cache_path = enhance_dir / f"{task_meta['cache_key']}.png"
                 if cache_path.exists():
+                    processed_tasks += 1
+                    self.update_progress("enhance", detail="Reusing cached enhanced crops", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
                     continue
                 task = dict(task_meta)
                 current_frame = read_image(input_dir / f"{task_meta['cache_key']}.png")
                 enhanced_frame, _ = enhance_mgr.run_enhance_task(task, current_frame, processor)
                 write_image(cache_path, enhanced_frame)
+                processed_tasks += 1
+                self.update_progress("enhance", detail="Running enhancement stage", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
         enhance_mgr.release_resources()
         chunk_state["stages"]["enhance"] = True
 
@@ -549,6 +632,8 @@ class StagedBatchExecutor:
         fallback_mgr = None
 
         try:
+            processed_frames = 0
+            total_frames = max(chunk_meta["end"] - chunk_meta["start"], 1)
             for frame_number, frame in iter_video_chunk(entry.filename, chunk_meta["start"], chunk_meta["end"], memory_plan["prefetch_frames"]):
                 frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
                 if frame_meta["fallback"]:
@@ -572,7 +657,8 @@ class StagedBatchExecutor:
                     if stream is not None:
                         stream.WriteToStream(result)
                 self.completed_units += 1
-                self.update_progress(f"Compositing {os.path.basename(entry.filename)}")
+                processed_frames += 1
+                self.update_progress("composite", detail="Compositing output frames", step_completed=processed_frames, step_total=total_frames, step_unit="frames")
         finally:
             compose_mgr.release_resources()
             if writer is not None:

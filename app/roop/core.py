@@ -38,6 +38,7 @@ from roop.ProcessEntry import ProcessEntry
 from roop.ProcessMgr import ProcessMgr
 from roop.ProcessOptions import ProcessOptions
 from roop.capturer import get_video_frame_total, release_video
+from roop.progress_status import finish_processing_status, set_processing_message
 from roop.staged_executor import StagedBatchExecutor
 
 
@@ -264,14 +265,17 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
                               roop.globals.face_swap_mode, selected_index, new_clip_text, mask, num_swap_steps,
                               roop.globals.subsample_size, False, restore_original_mouth)
     roop.globals.processing = True
+    set_processing_message("Preparing faceswap job", stage="prepare", total_files=len(files), detail="Initializing processor pipeline", memory_status=roop.globals.runtime_memory_status, force_log=True)
     if processing_mode == "Legacy extract frames":
         if process_mgr is None:
             process_mgr = ProcessMgr(progress)
         process_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, options)
+        set_processing_message("Running legacy extract-frames flow", stage="legacy", detail="Using compatibility pipeline", force_log=True)
         batch_process_legacy(output_method, files, False)
         return
 
     executor = StagedBatchExecutor(output_method, progress, options)
+    set_processing_message("Running smart staged flow", stage="prepare", detail="Chunked processing with resume cache", force_log=True)
     executor.run(files)
     if roop.globals.processing:
         end_processing('Finished')
@@ -307,6 +311,7 @@ def batch_process_legacy(output_method, files:list[ProcessEntry], use_new_method
     videofiles:list[ProcessEntry] = []
            
     update_status('Sorting videos/images')
+    set_processing_message('Sorting inputs', stage='prepare', detail='Building image/video queue', force_log=True)
 
 
     for index, f in enumerate(files):
@@ -327,12 +332,14 @@ def batch_process_legacy(output_method, files:list[ProcessEntry], use_new_method
 
     if(len(imagefiles) > 0):
         update_status('Processing image(s)')
+        set_processing_message('Processing image batch', stage='images', target_name=f'{len(imagefiles)} image(s)', detail='Legacy image batch pipeline', force_log=True)
         origimages = []
         fakeimages = []
         for f in imagefiles:
             origimages.append(f.filename)
             fakeimages.append(f.finalname)
 
+        process_mgr.set_progress_context('images', f'{len(imagefiles)} image(s)', unit='images')
         process_mgr.run_batch(origimages, fakeimages, roop.globals.execution_threads)
         origimages.clear()
         fakeimages.clear()
@@ -354,12 +361,14 @@ def batch_process_legacy(output_method, files:list[ProcessEntry], use_new_method
             if is_streaming_only == False and roop.globals.keep_frames or not use_new_method:
                 util.create_temp(v.filename)
                 update_status('Extracting frames...')
+                set_processing_message('Extracting frames', stage='extract', target_name=v.filename, file_index=index + 1, total_files=len(videofiles), detail='Writing source frames to temp storage', force_log=True)
                 ffmpeg.extract_frames(v.filename,v.startframe,v.endframe, fps)
                 if not roop.globals.processing:
                     end_processing('Processing stopped!')
                     return
 
                 temp_frame_paths = util.get_temp_frame_paths(v.filename)
+                process_mgr.set_progress_context('legacy_swap', v.filename, index + 1, len(videofiles), unit='frames')
                 process_mgr.run_batch(temp_frame_paths, temp_frame_paths, roop.globals.execution_threads)
                 if not roop.globals.processing:
                     end_processing('Processing stopped!')
@@ -371,6 +380,7 @@ def batch_process_legacy(output_method, files:list[ProcessEntry], use_new_method
                     print("Resorting frames to create video")
                     util.sort_rename_frames(extract_path)                                    
                 
+                set_processing_message('Encoding video from processed frames', stage='encode', target_name=v.filename, file_index=index + 1, total_files=len(videofiles), detail='Creating video from processed frame cache', force_log=True)
                 ffmpeg.create_video(v.filename, v.finalname, fps)
                 if not roop.globals.keep_frames:
                     util.delete_temp_frames(temp_frame_paths[0])
@@ -379,6 +389,7 @@ def batch_process_legacy(output_method, files:list[ProcessEntry], use_new_method
                     skip_audio = True
                 else:
                     skip_audio = roop.globals.skip_audio
+                process_mgr.set_progress_context('legacy_in_memory', v.filename, index + 1, len(videofiles), unit='frames')
                 process_mgr.run_batch_inmem(output_method, v.filename, v.finalname, v.startframe, v.endframe, fps,roop.globals.execution_threads, skip_audio)
                 
             if not roop.globals.processing:
@@ -394,6 +405,7 @@ def batch_process_legacy(output_method, files:list[ProcessEntry], use_new_method
                     pathlib.Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
 
                     update_status('Creating final GIF')
+                    set_processing_message('Creating final GIF', stage='mux', target_name=v.filename, file_index=index + 1, total_files=len(videofiles), detail='Encoding GIF output', force_log=True)
                     ffmpeg.create_gif_from_video(video_file_name, destination)
                     if os.path.isfile(destination):
                         os.remove(video_file_name)
@@ -403,6 +415,7 @@ def batch_process_legacy(output_method, files:list[ProcessEntry], use_new_method
                     pathlib.Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
 
                     if not skip_audio:
+                        set_processing_message('Restoring audio track', stage='mux', target_name=v.filename, file_index=index + 1, total_files=len(videofiles), detail='Muxing processed video with source audio', force_log=True)
                         ffmpeg.restore_audio(video_file_name, v.filename, v.startframe, v.endframe, destination)
                         if os.path.isfile(destination):
                             os.remove(video_file_name)
@@ -426,8 +439,16 @@ def batch_process_legacy(output_method, files:list[ProcessEntry], use_new_method
 
 
 def end_processing(msg:str):
+    lowered = msg.lower()
+    status = 'completed'
+    if 'stopped' in lowered or 'abort' in lowered:
+        status = 'stopped'
+    elif 'fail' in lowered or 'error' in lowered:
+        status = 'error'
+    finish_processing_status(msg, status=status)
     update_status(msg)
     roop.globals.target_folder_path = None
+    roop.globals.processing = False
     release_resources()
 
 

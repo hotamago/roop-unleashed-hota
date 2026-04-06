@@ -12,6 +12,7 @@ ui_target_thumbs = []
 ui_target_files = []
 ui_camera_frame = None
 ui_memory_status = None
+ui_processing_info = None
 
 # Saveable faceswap session component refs
 ui_selected_face_detection = None

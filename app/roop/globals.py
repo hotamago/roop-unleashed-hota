@@ -40,6 +40,10 @@ no_face_action = 1
 processing = False
 runtime_memory_status = 'Memory budget: not computed yet'
 active_memory_plan = None
+runtime_processing_status = 'Idle'
+runtime_processing_markdown = '**Process Info**\n- Status: Idle'
+runtime_processing_state = {}
+runtime_processing_last_log_at = 0.0
 
 g_current_face_analysis = None
 g_desired_face_analysis = None
