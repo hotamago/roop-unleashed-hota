@@ -18,7 +18,7 @@ module.exports = {
         venv: "env",
         path: "app",
         message: [
-          "uv sync"
+          "uv sync --no-cache"
         ]
       }
     },

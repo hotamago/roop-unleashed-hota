@@ -25,7 +25,7 @@ module.exports = {
     params: {
       venv: "env",
       path: "app",
-      message: "uv sync"
+      message: "uv sync --no-cache --upgrade"
     }
   }, {
     method: "script.start",
