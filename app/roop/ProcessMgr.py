@@ -95,6 +95,7 @@ class ProcessMgr():
         self.progress_file_total = None
         self.progress_unit = "frames"
         self.progress_started_at = None
+        self.single_batch_worker_pools = {}
 
         if progress is not None:
             self.progress_gradio = progress
@@ -107,6 +108,7 @@ class ProcessMgr():
 
 
     def initialize(self, input_faces, target_faces, options):
+        self.release_single_batch_worker_pools()
         self.input_face_datas = input_faces
         self.target_face_datas = target_faces
         self.num_frames_no_face = 0
@@ -422,19 +424,54 @@ class ProcessMgr():
         return max(1, int(configured_workers or 1))
 
 
+    def get_single_batch_worker_processors(self, processor, worker_count):
+        worker_count = max(1, int(worker_count))
+        pool_key = id(processor)
+        pool = self.single_batch_worker_pools.get(pool_key)
+        if pool is None or pool.get("base") is not processor:
+            pool = {
+                "base": processor,
+                "workers": [processor],
+            }
+            self.single_batch_worker_pools[pool_key] = pool
+
+        workers = pool["workers"]
+        while len(workers) < worker_count:
+            workers.append(processor.CreateWorkerProcessor())
+        while len(workers) > worker_count:
+            extra_worker = workers.pop()
+            if extra_worker is not processor:
+                try:
+                    extra_worker.Release()
+                except Exception:
+                    pass
+        return list(workers)
+
+
+    def release_single_batch_worker_pools(self):
+        for pool in self.single_batch_worker_pools.values():
+            workers = pool.get("workers", [])
+            for worker_processor in workers[1:]:
+                try:
+                    worker_processor.Release()
+                except Exception:
+                    pass
+        self.single_batch_worker_pools.clear()
+
+
     def run_tasks_parallel_single_batch(self, prepared_tasks, processor, run_task):
         if not prepared_tasks:
             return {}
-        worker_count = min(self.get_single_batch_worker_count(processor), len(prepared_tasks))
-        if worker_count <= 1:
+        configured_worker_count = self.get_single_batch_worker_count(processor)
+        if configured_worker_count <= 1 or len(prepared_tasks) <= 1:
             outputs = {}
             for prepared_task in prepared_tasks:
                 outputs[prepared_task["cache_key"]] = run_task(prepared_task, processor)
             return outputs
 
-        worker_processors = [processor]
-        worker_processors.extend(processor.CreateWorkerProcessor() for _ in range(worker_count - 1))
-        task_queue = Queue(maxsize=max(worker_count * 2, 2))
+        worker_processors = self.get_single_batch_worker_processors(processor, configured_worker_count)
+        active_worker_processors = worker_processors[:min(len(prepared_tasks), configured_worker_count)]
+        task_queue = Queue(maxsize=max(len(active_worker_processors) * 2, 2))
         outputs = {}
         output_lock = Lock()
         worker_error = {"exc": None}
@@ -458,25 +495,18 @@ class ProcessMgr():
                 finally:
                     task_queue.task_done()
 
-        worker_threads = [Thread(target=worker_loop, args=(worker_processor,), daemon=True) for worker_processor in worker_processors]
-        try:
-            for worker_thread in worker_threads:
-                worker_thread.start()
-            for prepared_task in prepared_tasks:
-                task_queue.put(prepared_task, block=True)
-            for _ in worker_threads:
-                task_queue.put(None, block=True)
-            task_queue.join()
-            for worker_thread in worker_threads:
-                worker_thread.join()
-            if worker_error["exc"] is not None:
-                raise worker_error["exc"]
-        finally:
-            for worker_processor in worker_processors[1:]:
-                try:
-                    worker_processor.Release()
-                except Exception:
-                    pass
+        worker_threads = [Thread(target=worker_loop, args=(worker_processor,), daemon=True) for worker_processor in active_worker_processors]
+        for worker_thread in worker_threads:
+            worker_thread.start()
+        for prepared_task in prepared_tasks:
+            task_queue.put(prepared_task, block=True)
+        for _ in worker_threads:
+            task_queue.put(None, block=True)
+        task_queue.join()
+        for worker_thread in worker_threads:
+            worker_thread.join()
+        if worker_error["exc"] is not None:
+            raise worker_error["exc"]
         return outputs
 
 
@@ -1341,6 +1371,7 @@ class ProcessMgr():
 
 
     def release_resources(self):
+        self.release_single_batch_worker_pools()
         for p in self.processors:
             p.Release()
         self.processors.clear()
