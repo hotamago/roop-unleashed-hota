@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 from pathlib import Path
@@ -54,6 +55,62 @@ def test_write_and_read_resume_payload_roundtrip(tmp_path, monkeypatch):
     assert resume_path.endswith(".json")
     assert reloaded["version"] == faceswap_tab.RESUME_CACHE_VERSION
     assert reloaded["targets"]["files"][0]["filename"].endswith("target.mp4")
+
+
+def test_pick_resume_job_key_preserves_when_only_settings_change(monkeypatch):
+    stored = "a" * 64
+    prior = {
+        "version": faceswap_tab.RESUME_CACHE_VERSION,
+        "sources": [{"type": "image_face", "path": "C:/s.png", "face_index": 0}],
+        "targets": {
+            "files": [{"filename": "C:/t.mp4", "startframe": 0, "endframe": 100, "fps": 24.0}],
+            "selected_faces": [{"path": "C:/t.mp4", "frame_number": 0, "face_index": 0, "face_embedding": [0.1, 0.2]}],
+            "selected_preview_index": 0,
+        },
+        "selection": {"input_face_index": 0, "target_face_index": 0},
+        "settings": {"output_method": "File", "mask_batch_size": 32},
+        "resume_job_key": stored,
+    }
+    new = copy.deepcopy(prior)
+    new["settings"] = {"output_method": "File", "mask_batch_size": 128, "swap_batch_size": 99}
+    del new["resume_job_key"]
+    monkeypatch.setattr(faceswap_tab, "get_source_file_signature", lambda ref: "sha256:src")
+    monkeypatch.setattr(faceswap_tab, "get_target_file_signature", lambda ref, key: "sha256:tgt")
+
+    assert faceswap_tab.pick_resume_job_key_for_write(prior, new) == stored
+
+
+def test_pick_resume_job_key_recomputes_when_target_file_identity_changes(monkeypatch):
+    stored = "b" * 64
+    prior = {
+        "version": faceswap_tab.RESUME_CACHE_VERSION,
+        "sources": [{"type": "image_face", "path": "C:/s.png", "face_index": 0}],
+        "targets": {
+            "files": [{"filename": "C:/t.mp4", "startframe": 0, "endframe": 100, "fps": 24.0}],
+            "selected_faces": [{"path": "C:/t.mp4", "frame_number": 0, "face_index": 0, "face_embedding": [0.1]}],
+            "selected_preview_index": 0,
+        },
+        "selection": {"input_face_index": 0, "target_face_index": 0},
+        "settings": {"output_method": "File"},
+        "resume_job_key": stored,
+    }
+    new = copy.deepcopy(prior)
+    new["targets"]["files"][0]["filename"] = "C:/other.mp4"
+    del new["resume_job_key"]
+
+    def sig_src(ref):
+        return "sha256:src"
+
+    def sig_tgt(ref, key):
+        v = ref.get(key) or ref.get("filename")
+        return f"sha256:{v}"
+
+    monkeypatch.setattr(faceswap_tab, "get_source_file_signature", sig_src)
+    monkeypatch.setattr(faceswap_tab, "get_target_file_signature", sig_tgt)
+
+    picked = faceswap_tab.pick_resume_job_key_for_write(prior, new)
+    assert picked != stored
+    assert len(picked) == 64
 
 
 def test_resume_payload_signature_ignores_performance_only_settings():

@@ -20,6 +20,16 @@ from roop.progress_status import get_processing_status_markdown, set_memory_stat
 last_image = None
 
 
+def sync_resume_processing_cache_id(resume_path) -> None:
+    """processing_cache/jobs/<stem>/… uses the resume JSON basename stem (stable human-visible id)."""
+    if not resume_path:
+        roop.globals.active_resume_cache_id = None
+        return
+    base = os.path.basename(os.path.normpath(str(resume_path)))
+    stem, _ext = os.path.splitext(base)
+    roop.globals.active_resume_cache_id = stem if stem else None
+
+
 SELECTED_INPUT_FACE_INDEX = 0
 SELECTED_TARGET_FACE_INDEX = 0
 
@@ -376,6 +386,22 @@ def get_resume_job_signature(payload):
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def pick_resume_job_key_for_write(prior_disk: dict | None, payload: dict) -> str:
+    """
+    Keep the same resume_job_key JSON field when job identity (sources/targets/selection) is unchanged.
+    (Job folders are keyed by resume JSON stem + target file id — see active_resume_cache_id.)
+    """
+    if isinstance(prior_disk, dict):
+        old_jk = prior_disk.get("resume_job_key")
+        if isinstance(old_jk, str) and old_jk:
+            try:
+                if get_resume_job_identity(prior_disk) == get_resume_job_identity(payload):
+                    return old_jk
+            except Exception:
+                pass
+    return get_resume_job_signature(payload)
+
+
 def get_resume_payload_path(payload):
     target_entries = (payload.get("targets") or {}).get("files") or []
     first_target_entry = target_entries[0] if target_entries else {}
@@ -533,14 +559,22 @@ def write_resume_payload_with_result(payload):
             resume_path = sticky
         else:
             resume_path = resolve_equivalent_resume_path(payload, desired_resume_path)
+    prior_disk = None
+    if os.path.isfile(resume_path):
+        try:
+            with open(resume_path, "r", encoding="utf-8") as handle:
+                prior_disk = json.load(handle)
+        except Exception:
+            prior_disk = None
     payload["resume_key"] = resume_key
-    payload["resume_job_key"] = get_resume_job_signature(payload)
+    payload["resume_job_key"] = pick_resume_job_key_for_write(prior_disk, payload)
     payload = snapshot_resume_source_files(payload, resume_path)
     payload = snapshot_resume_target_files(payload, resume_path)
     reused_existing = os.path.isfile(resume_path)
     with open(resume_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, ensure_ascii=True)
     ui.globals.ui_resume_last_path = resume_path
+    sync_resume_processing_cache_id(resume_path)
     return resume_path, reused_existing, resume_key
 
 
@@ -785,10 +819,9 @@ def load_resume_into_runtime(resume_path):
     global selected_preview_index, SELECTED_INPUT_FACE_INDEX, SELECTED_TARGET_FACE_INDEX
 
     payload = read_resume_payload(resume_path)
-    # Always derive anchors from canonical identity so they stay aligned with processing_cache
-    # (staged_executor uses active_resume_key) even if older JSON stored a mismatched resume_key.
     roop.globals.active_resume_key = get_resume_payload_signature(payload)
-    roop.globals.active_resume_job_key = get_resume_job_signature(payload)
+    # Must match JSON + existing jobs folder; recomputing can drift on float/path noise.
+    roop.globals.active_resume_job_key = payload.get("resume_job_key") or get_resume_job_signature(payload)
     restore_input_faces_from_resume(payload.get("sources") or [])
     target_paths = restore_process_entries((payload.get("targets") or {}).get("files") or [])
     restore_target_faces_from_resume((payload.get("targets") or {}).get("selected_faces") or [])
@@ -807,6 +840,7 @@ def load_resume_into_runtime(resume_path):
     slider, frame_text = on_destfiles_selected(None)
     ui.globals.ui_resume_last_path = payload["__path__"]
     ui.globals.ui_resume_bound_path = payload["__path__"]
+    sync_resume_processing_cache_id(payload["__path__"])
     summary = f"Loaded {len(roop.globals.INPUT_FACESETS)} source face(s), {len(target_paths)} target file(s), {len(roop.globals.TARGET_FACES)} selected target face(s)"
     return {
         "payload": payload,
@@ -1552,6 +1586,7 @@ def on_clear_destfiles():
     clear_target_face_state()
     ui.globals.ui_target_files = []
     ui.globals.ui_resume_bound_path = None
+    roop.globals.active_resume_cache_id = None
     list_files_process.clear()
     selected_preview_index = 0
     return ui.globals.ui_target_thumbs, gr.Slider(value=1, maximum=1, info='0:00:00'), '', ''
@@ -1615,7 +1650,7 @@ def save_resume_snapshot_for_run(output_method, enhancer, detection, keep_frames
     try:
         verified_payload = read_resume_payload(resume_path)
         roop.globals.active_resume_key = get_resume_payload_signature(verified_payload)
-        roop.globals.active_resume_job_key = get_resume_job_signature(verified_payload)
+        roop.globals.active_resume_job_key = verified_payload.get("resume_job_key") or get_resume_job_signature(verified_payload)
     except Exception:
         roop.globals.active_resume_key = resume_key
         roop.globals.active_resume_job_key = resume_job_key
@@ -1679,6 +1714,7 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     except Exception as exc:
         roop.globals.active_resume_key = None
         roop.globals.active_resume_job_key = None
+        roop.globals.active_resume_cache_id = None
         resume_status = get_resume_status_markdown(ui.globals.ui_resume_last_path, f"Resume config was not saved: {exc}")
         gr.Warning(f"Resume config was not saved for this run: {exc}")
     yield gr.Button(variant="secondary", interactive=False), gr.Button(variant="primary", interactive=True), get_processing_status_markdown(), resume_status

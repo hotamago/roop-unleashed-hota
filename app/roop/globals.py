@@ -46,6 +46,8 @@ runtime_processing_state = {}
 runtime_processing_last_log_at = 0.0
 active_resume_key = None
 active_resume_job_key = None
+# Basename stem of the active resume JSON (e.g. 20260406_8d8d244889be) — processing_cache/jobs/<stem>/…
+active_resume_cache_id = None
 
 g_current_face_analysis = None
 g_desired_face_analysis = None

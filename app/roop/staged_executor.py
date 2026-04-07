@@ -137,7 +137,31 @@ def get_entry_file_identity(entry):
     }
 
 
-def get_entry_job_key(entry, options):
+def get_staged_cache_options_snapshot(options):
+    """Only fields that change swap/mask/enhance outputs. Not VRAM batch sizes, prefetch, threads, etc."""
+    return {
+        "processors": sorted(options.processors.keys()),
+        "face_distance_threshold": options.face_distance_threshold,
+        "blend_ratio": options.blend_ratio,
+        "swap_mode": options.swap_mode,
+        "selected_index": options.selected_index,
+        "masking_text": options.masking_text,
+        "num_swap_steps": options.num_swap_steps,
+        "subsample_size": options.subsample_size,
+        "restore_original_mouth": options.restore_original_mouth,
+        "show_face_masking": bool(getattr(options, "show_face_masking", False)),
+    }
+
+
+def sanitize_job_path_segment(name: str, max_len: int = 120) -> str:
+    if not name or not str(name).strip():
+        return "unknown"
+    token = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(name).strip()).strip("._")
+    return (token[:max_len] or "unknown").lower()
+
+
+def _legacy_hashed_job_folder(entry, options) -> str:
+    """Single top-level folder when no resume JSON session id (adhoc / no resume file)."""
     active_resume_job_key = getattr(roop.globals, "active_resume_job_key", None)
     job_identity = {
         "pipeline_version": PIPELINE_VERSION,
@@ -152,32 +176,53 @@ def get_entry_job_key(entry, options):
     return hashlib.sha256(json_dumps(job_identity).encode("utf-8")).hexdigest()
 
 
-def get_entry_signature(entry, options, output_method):
-    file_identity = get_entry_file_identity(entry)
-    active_resume_key = getattr(roop.globals, "active_resume_key", None)
-    signature = {
+def get_entry_job_relpath(entry, options) -> str:
+    """
+    Stable disk layout: processing_cache/jobs/<resume_json_stem>/<target_slug>/
+    when a resume JSON is active. No SHA256 of resume blobs for the path.
+    """
+    session = getattr(roop.globals, "active_resume_cache_id", None)
+    if session and str(session).strip():
+        session_seg = sanitize_job_path_segment(str(session).strip())
+        sig = getattr(entry, "file_signature", None)
+        if isinstance(sig, str) and sig.strip():
+            file_seg = sanitize_job_path_segment(sig.replace(":", "_"))
+        else:
+            fp = os.path.abspath(entry.filename)
+            st = os.stat(entry.filename)
+            digest = hashlib.sha256(f"{fp}|{st.st_size}|{entry.startframe}|{entry.endframe}".encode("utf-8")).hexdigest()[:24]
+            file_seg = f"f_{digest}"
+        return f"{session_seg}/{file_seg}"
+    return _legacy_hashed_job_folder(entry, options)
+
+
+def get_entry_job_key(entry, options):
+    """Backward-compatible name: relative path under jobs/ (may contain one '/')."""
+    return get_entry_job_relpath(entry, options)
+
+
+def get_staged_cache_manifest_signature(entry, options, output_method) -> str:
+    """
+    Invalidate cached stages only when output semantics or this target clip change.
+    No resume_key / resume_job_key / face-embedding hashes.
+    """
+    blob = {
         "pipeline_version": PIPELINE_VERSION,
-        "file": file_identity,
         "output_method": output_method,
-        "options": {
-            "processors": list(options.processors.keys()),
-            "face_distance_threshold": options.face_distance_threshold,
-            "blend_ratio": options.blend_ratio,
-            "swap_mode": options.swap_mode,
-            "selected_index": options.selected_index,
-            "masking_text": options.masking_text,
-            "num_swap_steps": options.num_swap_steps,
-            "subsample_size": options.subsample_size,
-            "restore_original_mouth": options.restore_original_mouth,
-            "show_face_area_overlay": options.show_face_area_overlay,
-        },
+        "options": get_staged_cache_options_snapshot(options),
+        "frame_range": [entry.startframe, entry.endframe],
     }
-    if active_resume_key:
-        signature["resume_key"] = active_resume_key
+    fs = getattr(entry, "file_signature", None)
+    if isinstance(fs, str) and fs.strip():
+        blob["file_content"] = fs.strip()
     else:
-        signature["inputs"] = hash_facesets(roop.globals.INPUT_FACESETS)
-        signature["targets"] = hash_target_faces(roop.globals.TARGET_FACES)
-    return hashlib.sha256(json_dumps(signature).encode("utf-8")).hexdigest()
+        st = os.stat(entry.filename)
+        blob["file_anchor"] = f"{os.path.abspath(entry.filename)}|{st.st_size}"
+    return hashlib.sha256(json_dumps(blob).encode("utf-8")).hexdigest()
+
+
+def get_entry_signature(entry, options, output_method):
+    return get_staged_cache_manifest_signature(entry, options, output_method)
 
 
 def list_stage_images(stage_dir: Path, image_format: str):
@@ -1224,7 +1269,8 @@ class StagedBatchExecutor:
     def prepare_job(self, entry, memory_plan):
         job_key = get_entry_job_key(entry, self.options)
         cache_signature = get_entry_signature(entry, self.options, self.output_method)
-        job_dir = self.jobs_root / job_key
+        parts = [p for p in str(job_key).replace("\\", "/").split("/") if p]
+        job_dir = self.jobs_root.joinpath(*parts) if parts else self.jobs_root / "unknown"
         job_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = job_dir / "manifest.json"
         if manifest_path.exists():
