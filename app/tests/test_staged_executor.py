@@ -87,3 +87,73 @@ def test_entry_signature_uses_effective_single_batch_workers(tmp_path, monkeypat
     sig_b = get_entry_signature(entry, options, "File")
 
     assert sig_a == sig_b
+
+
+def test_cleanup_job_dir_preserves_processing_cache_for_resume(tmp_path, monkeypatch):
+    executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
+    job_dir = tmp_path / "job-cache"
+    job_dir.mkdir()
+    (job_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(roop.globals, "processing", True, raising=False)
+
+    executor.cleanup_job_dir(job_dir)
+
+    assert job_dir.exists()
+    assert (job_dir / "manifest.json").exists()
+
+
+def test_completed_video_job_skips_full_pipeline_when_output_exists(tmp_path, monkeypatch):
+    executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
+    source_path = tmp_path / "clip.mp4"
+    source_path.write_bytes(b"video")
+    output_path = tmp_path / "clip_out.mp4"
+    output_path.write_bytes(b"ready")
+    entry = ProcessEntry(str(source_path), 0, 10, 30.0)
+    entry.finalname = str(output_path)
+
+    class FakeCapture:
+        def get(self, prop):
+            if prop == 3:
+                return 1920
+            if prop == 4:
+                return 1080
+            return 0
+
+        def release(self):
+            return None
+
+    memory_plan = {
+        "chunk_size": 96,
+        "prefetch_frames": 24,
+        "swap_batch_size": 32,
+        "mask_batch_size": 64,
+        "enhance_batch_size": 8,
+        "single_batch_workers": 1,
+    }
+    manifest = {
+        "status": "completed",
+        "stages": {
+            "detect": True,
+            "swap": True,
+            "mask": True,
+            "enhance": True,
+            "composite": True,
+        },
+    }
+    job_dir = tmp_path / "job-cache"
+    job_dir.mkdir()
+
+    monkeypatch.setattr("roop.staged_executor.cv2.VideoCapture", lambda _: FakeCapture())
+    monkeypatch.setattr("roop.staged_executor.resolve_memory_plan", lambda width, height: dict(memory_plan))
+    monkeypatch.setattr("roop.staged_executor.describe_memory_plan", lambda plan: "memory-plan")
+    monkeypatch.setattr("roop.staged_executor.set_memory_status", lambda status: None)
+    monkeypatch.setattr(executor, "prepare_job", lambda current_entry, current_plan: (job_dir, dict(manifest)))
+    monkeypatch.setattr(
+        executor,
+        "ensure_full_detect_stage",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("detect stage should be skipped")),
+    )
+
+    executor.process_video_entry_full_frames(entry, 0)
+
+    assert executor.completed_units == 10

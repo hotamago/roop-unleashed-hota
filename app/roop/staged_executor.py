@@ -352,7 +352,7 @@ class StagedBatchExecutor:
         set_memory_status(describe_memory_plan(memory_plan))
         job_dir, manifest = self.prepare_job(entry, memory_plan)
         self.update_progress("prepare", detail="Preparing image stages", step_completed=0, step_total=1, step_unit="image", force_log=True)
-        if manifest.get("status") == "completed" and os.path.isfile(entry.finalname):
+        if self.should_skip_completed_output(entry, manifest):
             self.completed_units += 1
             self.update_progress("resume", detail=f"Skipping cached image {os.path.basename(entry.filename)}", step_completed=1, step_total=1, step_unit="image", force_log=True)
             return
@@ -486,6 +486,10 @@ class StagedBatchExecutor:
         endframe = entry.endframe or get_video_frame_total(entry.filename)
         fps = entry.fps or util.detect_fps(entry.filename)
         frame_count = max(endframe - entry.startframe, 1)
+        if self.should_skip_completed_output(entry, manifest):
+            self.completed_units += frame_count
+            self.update_progress("resume", detail=f"Skipping completed cached video {os.path.basename(entry.filename)}", step_completed=frame_count, step_total=frame_count, step_unit="frames", force_log=True)
+            return
         self.update_progress("prepare", detail="Preparing packed detect cache and stage pipeline", step_completed=0, step_total=frame_count, step_unit="frames", force_log=True)
         stages = merge_stage_defaults(manifest.get("stages"), {
             "detect": False,
@@ -1308,6 +1312,11 @@ class StagedBatchExecutor:
         chunk_state["stages"]["composite"] = True
 
 
+    def should_skip_completed_output(self, entry, manifest):
+        return manifest.get("status") == "completed" and bool(getattr(entry, "finalname", None)) and os.path.isfile(entry.finalname)
+
+
     def cleanup_job_dir(self, job_dir):
-        if os.path.isdir(job_dir) and roop.globals.processing:
-            shutil.rmtree(job_dir, ignore_errors=True)
+        # Preserve on-disk stage cache across runs. Users can clear it manually
+        # from Settings when they want to reclaim disk space.
+        return
