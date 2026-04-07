@@ -4,6 +4,7 @@ import numpy as np
 import onnx
 import onnxruntime
 
+from roop.onnx_batch import ensure_native_batch_model
 from roop.typing import Face, Frame
 from roop.utilities import resolve_relative_path
 
@@ -28,9 +29,10 @@ class FaceSwapInsightFace():
 
         self.plugin_options = plugin_options
         if self.model_swap_insightface is None:
-            model_path = resolve_relative_path('../models/inswapper_128.onnx')
-            graph = onnx.load(model_path).graph
+            original_model_path = resolve_relative_path('../models/inswapper_128.onnx')
+            graph = onnx.load(original_model_path).graph
             self.emap = onnx.numpy_helper.to_array(graph.initializer[-1])
+            model_path = ensure_native_batch_model(original_model_path)
             self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
             self.input_mean = 0.0
             self.input_std = 255.0

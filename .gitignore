@@ -28,4 +28,4 @@ app/saved_configs
 
 app/content
 app/resume_cache
-app/processing_cache/jobs
+app/processing_cache

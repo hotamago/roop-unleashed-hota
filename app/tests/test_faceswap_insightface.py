@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import onnx
 
 from roop.processors.FaceSwapInsightFace import FaceSwapInsightFace
 
@@ -30,6 +31,14 @@ class FakeSession:
                 "for the following indices index: 0 Got: 80 Expected: 1"
             )
         return [target.copy()]
+
+
+class FakeDynamicSession(FakeSession):
+    def get_inputs(self):
+        return [
+            FakeInputMeta(["batch", 3, 128, 128]),
+            FakeInputMeta(["batch", 512]),
+        ]
 
 
 def make_source_face():
@@ -65,3 +74,34 @@ def test_faceswap_insightface_falls_back_to_single_batch_when_ort_rejects_batch(
     assert processor.batch_size_limit == 1
     assert processor.supports_batch is False
     assert processor.model_swap_insightface.calls == [2, 1, 1]
+
+
+def test_faceswap_insightface_initialize_uses_native_batch_model(monkeypatch):
+    captured = {}
+    fake_graph = SimpleNamespace(
+        initializer=[onnx.numpy_helper.from_array(np.eye(512, dtype=np.float32), name="emap")]
+    )
+
+    monkeypatch.setattr("roop.processors.FaceSwapInsightFace.resolve_relative_path", lambda _path: "original.onnx")
+    monkeypatch.setattr("roop.processors.FaceSwapInsightFace.onnx.load", lambda _path: SimpleNamespace(graph=fake_graph))
+
+    try:
+        monkeypatch.setattr(
+            "roop.processors.FaceSwapInsightFace.ensure_native_batch_model",
+            lambda model_path: "patched.onnx",
+        )
+    except AttributeError as exc:
+        raise AssertionError("FaceSwapInsightFace should import native batch helper") from exc
+
+    def fake_inference_session(model_path, *_args, **_kwargs):
+        captured["model_path"] = model_path
+        return FakeDynamicSession()
+
+    monkeypatch.setattr("roop.processors.FaceSwapInsightFace.onnxruntime.InferenceSession", fake_inference_session)
+
+    processor = FaceSwapInsightFace()
+    processor.Initialize({"devicename": "cuda"})
+
+    assert captured["model_path"] == "patched.onnx"
+    assert processor.batch_size_limit is None
+    assert processor.supports_batch is True

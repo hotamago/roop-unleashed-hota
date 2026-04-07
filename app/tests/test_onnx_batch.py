@@ -1,0 +1,56 @@
+from pathlib import Path
+
+import onnx
+from onnx import TensorProto, helper
+
+
+def _make_identity_model(path: Path, input_shape, output_shape):
+    graph = helper.make_graph(
+        [helper.make_node("Identity", ["input"], ["output"])],
+        "identity",
+        [helper.make_tensor_value_info("input", TensorProto.FLOAT, input_shape)],
+        [helper.make_tensor_value_info("output", TensorProto.FLOAT, output_shape)],
+    )
+    model = helper.make_model(graph, producer_name="pytest")
+    onnx.save(model, path)
+
+
+def test_ensure_native_batch_model_rewrites_static_batch_to_symbolic(tmp_path, monkeypatch):
+    try:
+        from roop import onnx_batch
+    except ImportError as exc:
+        raise AssertionError("roop.onnx_batch helper should exist") from exc
+
+    model_path = tmp_path / "static-batch.onnx"
+    _make_identity_model(model_path, [1, 3], [1, 3])
+
+    cache_root = tmp_path / "processing_cache"
+    monkeypatch.setattr(onnx_batch, "get_processing_cache_root", lambda: cache_root)
+
+    patched_path = Path(onnx_batch.ensure_native_batch_model(str(model_path)))
+
+    assert patched_path != model_path
+    assert patched_path.exists()
+
+    patched_model = onnx.load(str(patched_path))
+    input_dim = patched_model.graph.input[0].type.tensor_type.shape.dim[0]
+    output_dim = patched_model.graph.output[0].type.tensor_type.shape.dim[0]
+
+    assert input_dim.dim_param == "batch"
+    assert output_dim.dim_param == "batch"
+    assert not input_dim.HasField("dim_value")
+    assert not output_dim.HasField("dim_value")
+
+
+def test_ensure_native_batch_model_keeps_dynamic_model_path(tmp_path):
+    try:
+        from roop import onnx_batch
+    except ImportError as exc:
+        raise AssertionError("roop.onnx_batch helper should exist") from exc
+
+    model_path = tmp_path / "dynamic-batch.onnx"
+    _make_identity_model(model_path, ["batch", 3], ["batch", 3])
+
+    resolved_path = onnx_batch.ensure_native_batch_model(str(model_path))
+
+    assert resolved_path == str(model_path)
