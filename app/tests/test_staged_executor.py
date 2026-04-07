@@ -4,6 +4,7 @@ import numpy as np
 
 import roop.globals
 from roop.ProcessEntry import ProcessEntry
+from roop.ProcessMgr import eNoFaceAction
 from roop.ProcessOptions import ProcessOptions
 from roop.staged_executor import (
     StagedBatchExecutor,
@@ -234,7 +235,6 @@ def test_entry_signature_uses_effective_single_batch_workers(tmp_path, monkeypat
     entry = ProcessEntry(str(media_path), 0, 10, 30.0)
     options = make_options({"faceswap": {}})
 
-    monkeypatch.setattr("roop.staged_executor.resolve_single_batch_workers", lambda configured_workers: (1, configured_workers, "GPU-safe cap"))
     monkeypatch.setattr(roop.globals.CFG, "single_batch_workers", 2, raising=False)
     sig_a = get_entry_signature(entry, options, "File")
 
@@ -297,6 +297,22 @@ def test_entry_job_key_uses_active_resume_job_key_when_available(tmp_path, monke
     job_key_b = get_entry_job_key(entry, options)
 
     assert job_key_a == job_key_b
+
+
+def test_get_compose_worker_count_uses_cfg_max_threads_when_order_is_safe(monkeypatch):
+    executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
+    monkeypatch.setattr(roop.globals.CFG, "max_threads", 4, raising=False)
+    monkeypatch.setattr(roop.globals, "no_face_action", eNoFaceAction.USE_ORIGINAL_FRAME, raising=False)
+
+    assert executor.get_compose_worker_count() == 4
+
+
+def test_get_compose_worker_count_falls_back_to_single_thread_for_use_last_swapped(monkeypatch):
+    executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
+    monkeypatch.setattr(roop.globals.CFG, "max_threads", 4, raising=False)
+    monkeypatch.setattr(roop.globals, "no_face_action", eNoFaceAction.USE_LAST_SWAPPED, raising=False)
+
+    assert executor.get_compose_worker_count() == 1
 
 
 def test_prepare_job_reuses_stable_resume_job_dir_when_signature_changes(tmp_path, monkeypatch):

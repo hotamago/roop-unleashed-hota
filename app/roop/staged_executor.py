@@ -5,8 +5,9 @@ import pickle
 import queue
 import shutil
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from threading import Thread
+from threading import Thread, local
 
 import cv2
 import numpy as np
@@ -15,11 +16,11 @@ import roop.globals
 import roop.util_ffmpeg as ffmpeg
 import roop.utilities as util
 from roop.cache_paths import get_jobs_root as get_persistent_jobs_root
-from roop.ProcessMgr import ProcessMgr
+from roop.ProcessMgr import ProcessMgr, eNoFaceAction
 from roop.ProcessOptions import ProcessOptions
 from roop.capturer import get_image_frame, get_video_frame_total
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
-from roop.memory import describe_memory_plan, resolve_memory_plan, resolve_single_batch_workers
+from roop.memory import describe_memory_plan, resolve_memory_plan
 from roop.progress_status import get_processing_status_line, publish_processing_progress, set_memory_status
 from roop.video_io import open_video_capture, resolve_video_writer_config
 
@@ -336,6 +337,35 @@ class StagedBatchExecutor:
             self.fallback_mgr = ProcessMgr(None)
             self.fallback_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, self.options)
         return self.fallback_mgr
+
+
+    def get_compose_worker_count(self):
+        requested_workers = getattr(roop.globals.CFG, "max_threads", 1)
+        try:
+            resolved_workers = int(requested_workers)
+        except (TypeError, ValueError):
+            resolved_workers = 1
+        resolved_workers = max(1, min(resolved_workers, 8))
+        if roop.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
+            return 1
+        return resolved_workers
+
+
+    def compose_frame_from_cache(self, compose_mgr, frame, frame_meta, input_cache, enhance_cache, fallback_mgr=None):
+        if frame_meta["fallback"]:
+            if fallback_mgr is None:
+                fallback_mgr = self.get_fallback_mgr()
+            return fallback_mgr.process_frame(frame)
+
+        result = frame.copy()
+        for task_meta in frame_meta["tasks"]:
+            fake_frame = input_cache[task_meta["cache_key"]]
+            enhanced_frame = enhance_cache.get(task_meta["cache_key"]) if self.enhancer_name is not None else None
+            result = compose_mgr.compose_task(result, task_meta, fake_frame, enhanced_frame)
+        if fallback_mgr is not None and result is not None:
+            fallback_mgr.last_swapped_frame = result.copy()
+            fallback_mgr.num_frames_no_face = 0
+        return result
 
 
     def count_total_units(self, files):
@@ -994,6 +1024,7 @@ class StagedBatchExecutor:
         compose_mgr = ProcessMgr(None)
         compose_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, self.build_stage_options([]))
         fallback_mgr = None
+        last_result_frame = None
         processed_frames = 0
         cap = open_video_capture(entry.filename)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -1028,31 +1059,101 @@ class StagedBatchExecutor:
             pack_iter = iter(self.iter_detect_packs(detect_dir))
             current_pack = next(pack_iter, None)
             current_pack_end, frame_lookup, input_cache, enhance_cache = load_pack_state(current_pack)
+            compose_worker_count = self.get_compose_worker_count()
 
-            for frame_number, frame in iter_video_chunk(entry.filename, entry.startframe, endframe, memory_plan["prefetch_frames"]):
-                while current_pack_end is not None and frame_number > current_pack_end:
-                    current_pack = next(pack_iter, None)
-                    current_pack_end, frame_lookup, input_cache, enhance_cache = load_pack_state(current_pack)
-
-                frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
-                if frame_meta["fallback"]:
-                    fallback_mgr = self.get_fallback_mgr()
-                    result = fallback_mgr.process_frame(frame)
-                else:
-                    result = frame.copy()
-                    for task_meta in frame_meta["tasks"]:
-                        fake_frame = input_cache[task_meta["cache_key"]]
-                        enhanced_frame = enhance_cache.get(task_meta["cache_key"]) if self.enhancer_name is not None else None
-                        result = compose_mgr.compose_task(result, task_meta, fake_frame, enhanced_frame)
-                    fallback_mgr = self.fallback_mgr
-                    if fallback_mgr is not None and result is not None:
-                        fallback_mgr.last_swapped_frame = result.copy()
-                        fallback_mgr.num_frames_no_face = 0
+            def write_composed_frame(result):
+                nonlocal processed_frames, last_result_frame, fallback_mgr
                 if result is not None:
                     writer.write_frame(result)
+                    last_result_frame = result.copy()
+                if fallback_mgr is not None and result is not None:
+                    fallback_mgr.last_swapped_frame = result.copy()
+                    fallback_mgr.num_frames_no_face = 0
                 self.completed_units += 1
                 processed_frames += 1
                 self.update_progress("composite", detail="Streaming source decode + direct video encode", step_completed=processed_frames, step_total=frame_count, step_unit="frames")
+
+            if compose_worker_count == 1:
+                for frame_number, frame in iter_video_chunk(entry.filename, entry.startframe, endframe, memory_plan["prefetch_frames"]):
+                    while current_pack_end is not None and frame_number > current_pack_end:
+                        current_pack = next(pack_iter, None)
+                        current_pack_end, frame_lookup, input_cache, enhance_cache = load_pack_state(current_pack)
+
+                    frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
+                    if frame_meta["fallback"]:
+                        fallback_mgr = self.get_fallback_mgr()
+                        result = self.compose_frame_from_cache(compose_mgr, frame, frame_meta, input_cache, enhance_cache, fallback_mgr)
+                    else:
+                        result = self.compose_frame_from_cache(compose_mgr, frame, frame_meta, input_cache, enhance_cache, fallback_mgr)
+                    write_composed_frame(result)
+            else:
+                worker_state = local()
+                worker_managers = []
+                pending_futures = {}
+                buffered_results = {}
+                next_result_index = 0
+                max_in_flight = max(compose_worker_count * 2, 1)
+
+                def get_thread_compose_mgr():
+                    thread_compose_mgr = getattr(worker_state, "compose_mgr", None)
+                    if thread_compose_mgr is None:
+                        thread_compose_mgr = ProcessMgr(None)
+                        thread_compose_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, self.build_stage_options([]))
+                        worker_state.compose_mgr = thread_compose_mgr
+                        worker_managers.append(thread_compose_mgr)
+                    return thread_compose_mgr
+
+                def compose_non_fallback_frame(frame, frame_meta, source_cache, enhanced_cache):
+                    thread_compose_mgr = get_thread_compose_mgr()
+                    return self.compose_frame_from_cache(thread_compose_mgr, frame, frame_meta, source_cache, enhanced_cache)
+
+                def flush_done_futures(done_futures):
+                    nonlocal next_result_index
+                    for done_future in done_futures:
+                        frame_index = pending_futures.pop(done_future)
+                        buffered_results[frame_index] = done_future.result()
+                    while next_result_index in buffered_results:
+                        result = buffered_results.pop(next_result_index)
+                        write_composed_frame(result)
+                        next_result_index += 1
+
+                def flush_all_pending():
+                    while pending_futures:
+                        done_futures, _ = wait(set(pending_futures), return_when=FIRST_COMPLETED)
+                        flush_done_futures(done_futures)
+
+                with ThreadPoolExecutor(max_workers=compose_worker_count, thread_name_prefix="staged_compose") as executor:
+                    frame_index = 0
+                    for frame_number, frame in iter_video_chunk(entry.filename, entry.startframe, endframe, memory_plan["prefetch_frames"]):
+                        while current_pack_end is not None and frame_number > current_pack_end:
+                            current_pack = next(pack_iter, None)
+                            current_pack_end, frame_lookup, input_cache, enhance_cache = load_pack_state(current_pack)
+
+                        frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
+                        if frame_meta["fallback"]:
+                            flush_all_pending()
+                            fallback_mgr = self.get_fallback_mgr()
+                            if fallback_mgr.last_swapped_frame is None and last_result_frame is not None:
+                                fallback_mgr.last_swapped_frame = last_result_frame.copy()
+                                fallback_mgr.num_frames_no_face = 0
+                            result = self.compose_frame_from_cache(compose_mgr, frame, frame_meta, input_cache, enhance_cache, fallback_mgr)
+                            write_composed_frame(result)
+                            frame_index += 1
+                            next_result_index = frame_index
+                            continue
+
+                        if len(pending_futures) >= max_in_flight:
+                            done_futures, _ = wait(set(pending_futures), return_when=FIRST_COMPLETED)
+                            flush_done_futures(done_futures)
+
+                        future = executor.submit(compose_non_fallback_frame, frame, frame_meta, input_cache, enhance_cache)
+                        pending_futures[future] = frame_index
+                        frame_index += 1
+
+                    flush_all_pending()
+
+                for worker_manager in worker_managers:
+                    worker_manager.release_resources()
         finally:
             compose_mgr.release_resources()
             writer.close()
