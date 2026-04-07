@@ -5,8 +5,13 @@ from typing import Optional
 import roop.globals
 
 
-OS_RAM_RESERVE_GB = 2.0
-GPU_VRAM_RESERVE_GB = 0.75
+DEFAULT_STAGED_CHUNK_SIZE = 96
+DEFAULT_PREFETCH_FRAMES = 24
+DEFAULT_SWAP_BATCH_SIZE = 32
+DEFAULT_MASK_BATCH_SIZE = 64
+DEFAULT_ENHANCE_BATCH_SIZE = 8
+DEFAULT_SINGLE_BATCH_WORKERS = 1
+DEFAULT_DETECT_PACK_FRAME_COUNT = 256
 
 
 def _bytes_to_gb(num_bytes: float) -> float:
@@ -15,6 +20,16 @@ def _bytes_to_gb(num_bytes: float) -> float:
 
 def _round_gb(value: float) -> float:
     return round(max(0.0, value), 2)
+
+
+def _clamp_int(value, default: int, minimum: int, maximum: int) -> int:
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError):
+        resolved = default
+    if resolved <= 0:
+        resolved = default
+    return max(minimum, min(resolved, maximum))
 
 
 def provider_uses_gpu() -> bool:
@@ -40,69 +55,22 @@ def get_available_vram_gb() -> Optional[float]:
         return None
 
 
-def resolve_single_batch_worker_cap(vram_budget_gb: Optional[float]) -> int:
-    if provider_uses_gpu() and vram_budget_gb is not None and vram_budget_gb > 0:
-        if vram_budget_gb < 8.0:
-            return 1
-        if vram_budget_gb < 16.0:
-            return 2
-        if vram_budget_gb < 24.0:
-            return 3
-        return 4
-    max_threads = max(1, int(getattr(roop.globals.CFG, "max_threads", 1) or 1))
-    return min(max_threads, 4)
-
-
 def resolve_memory_plan(width: int = 0, height: int = 0) -> dict:
     cfg = roop.globals.CFG
-    available_ram = get_available_ram_gb()
     available_vram = get_available_vram_gb()
-
-    if cfg.memory_mode == "manual":
-        ram_budget = cfg.max_ram_gb if cfg.max_ram_gb and cfg.max_ram_gb > 0 else max(available_ram - OS_RAM_RESERVE_GB, 0.5)
-        vram_budget = cfg.max_vram_gb if cfg.max_vram_gb and cfg.max_vram_gb > 0 else available_vram
-    else:
-        ram_budget = max(available_ram - OS_RAM_RESERVE_GB, 0.5)
-        if available_vram is not None:
-            vram_budget = max(available_vram - GPU_VRAM_RESERVE_GB, 0.25)
-        else:
-            vram_budget = None
-
-    if available_vram is None:
-        vram_budget = None
-    elif vram_budget is not None:
-        vram_budget = min(vram_budget, available_vram)
-
-    frame_bytes = max(width * height * 3, 1)
-    ram_budget_bytes = max(ram_budget, 0.25) * (1024 ** 3)
-    approx_frame_cost = max(frame_bytes * 6, 1)
-    chunk_size = int(ram_budget_bytes / approx_frame_cost)
-    chunk_size = max(8, min(chunk_size, 240))
-    if getattr(cfg, "staged_chunk_size", 0):
-        chunk_size = max(8, min(int(cfg.staged_chunk_size), 480))
-
-    swap_batch = 1
-    mask_batch = 1
-    enhance_batch = 1
-    if vram_budget is not None and vram_budget > 0:
-        swap_batch = max(4, min(128, int(vram_budget * 8)))
-        mask_batch = max(8, min(256, int(vram_budget * 16)))
-        enhance_batch = max(2, min(32, int(vram_budget * 2.5)))
-
-    prefetch_frames = max(4, min(chunk_size // 2, 48))
+    chunk_size = _clamp_int(getattr(cfg, "staged_chunk_size", DEFAULT_STAGED_CHUNK_SIZE), DEFAULT_STAGED_CHUNK_SIZE, 8, 480)
+    prefetch_frames = _clamp_int(getattr(cfg, "prefetch_frames", DEFAULT_PREFETCH_FRAMES), DEFAULT_PREFETCH_FRAMES, 1, 256)
+    prefetch_frames = min(prefetch_frames, chunk_size)
     plan = {
-        "mode": cfg.memory_mode,
-        "available_ram_gb": _round_gb(available_ram),
+        "available_ram_gb": _round_gb(get_available_ram_gb()),
         "available_vram_gb": None if available_vram is None else _round_gb(available_vram),
-        "ram_budget_gb": _round_gb(ram_budget),
-        "vram_budget_gb": None if vram_budget is None else _round_gb(vram_budget),
         "chunk_size": chunk_size,
         "prefetch_frames": prefetch_frames,
-        "swap_batch_size": swap_batch,
-        "swap_single_batch_workers": resolve_single_batch_worker_cap(vram_budget),
-        "mask_batch_size": mask_batch,
-        "enhance_batch_size": enhance_batch,
-        "detect_pack_frame_count": max(8, int(getattr(cfg, "detect_pack_frame_count", 256) or 256)),
+        "swap_batch_size": _clamp_int(getattr(cfg, "swap_batch_size", DEFAULT_SWAP_BATCH_SIZE), DEFAULT_SWAP_BATCH_SIZE, 1, 256),
+        "mask_batch_size": _clamp_int(getattr(cfg, "mask_batch_size", DEFAULT_MASK_BATCH_SIZE), DEFAULT_MASK_BATCH_SIZE, 1, 512),
+        "enhance_batch_size": _clamp_int(getattr(cfg, "enhance_batch_size", DEFAULT_ENHANCE_BATCH_SIZE), DEFAULT_ENHANCE_BATCH_SIZE, 1, 128),
+        "single_batch_workers": _clamp_int(getattr(cfg, "single_batch_workers", DEFAULT_SINGLE_BATCH_WORKERS), DEFAULT_SINGLE_BATCH_WORKERS, 1, 8),
+        "detect_pack_frame_count": _clamp_int(getattr(cfg, "detect_pack_frame_count", DEFAULT_DETECT_PACK_FRAME_COUNT), DEFAULT_DETECT_PACK_FRAME_COUNT, 8, 2048),
     }
     roop.globals.active_memory_plan = plan
     roop.globals.runtime_memory_status = describe_memory_plan(plan)
@@ -113,15 +81,12 @@ def describe_memory_plan(plan: Optional[dict] = None) -> str:
     if plan is None:
         plan = roop.globals.active_memory_plan
     if not plan:
-        return "Memory budget: not computed yet"
-    ram = f"{plan['ram_budget_gb']:.2f} GB RAM"
-    if plan["vram_budget_gb"] is None:
-        vram = "CPU / no VRAM cap"
-    else:
-        vram = f"{plan['vram_budget_gb']:.2f} GB VRAM"
+        return "Resource tuning: not computed yet"
+    available_vram = plan.get("available_vram_gb")
+    vram_text = "CPU / no VRAM telemetry" if available_vram is None else f"avail VRAM={available_vram:.2f} GB"
     return (
-        f"Memory budget: {plan['mode']} | {ram} | {vram} | "
-        f"chunk={plan['chunk_size']} | detect pack={plan['detect_pack_frame_count']} | prefetch={plan['prefetch_frames']} | "
-        f"swap batch={plan['swap_batch_size']} | swap workers={plan['swap_single_batch_workers']} | mask batch={plan['mask_batch_size']} | "
-        f"enhance batch={plan['enhance_batch_size']}"
+        f"Resource tuning: chunk={plan['chunk_size']} | detect pack={plan['detect_pack_frame_count']} | "
+        f"prefetch={plan['prefetch_frames']} | swap batch={plan['swap_batch_size']} | "
+        f"single-batch workers={plan['single_batch_workers']} | mask batch={plan['mask_batch_size']} | "
+        f"enhance batch={plan['enhance_batch_size']} | avail RAM={plan['available_ram_gb']:.2f} GB | {vram_text}"
     )

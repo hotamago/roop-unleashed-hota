@@ -27,3 +27,4 @@ app/saved_configs
 # app/output and app/temp are already ignored above as directories
 
 app/content
+app/resume_cache

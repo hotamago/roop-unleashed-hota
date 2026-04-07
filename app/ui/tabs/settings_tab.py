@@ -40,17 +40,19 @@ def settings_tab():
         with gr.Row():
             with gr.Column():
                 settings_controls.append(gr.Dropdown(providerlist, label="Provider", value=roop.globals.CFG.provider, elem_id='provider', interactive=True))
-                settings_controls.append(gr.Dropdown(["smart", "manual"], label="Memory Mode", value=roop.globals.CFG.memory_mode, elem_id='memory_mode', interactive=True))
                 chk_det_size = gr.Checkbox(label="Use default Det-Size", value=True, elem_id='default_det_size', interactive=True)
                 settings_controls.append(gr.Checkbox(label="Force CPU for Face Analyser", value=roop.globals.CFG.force_cpu, elem_id='force_cpu', interactive=True))
                 max_threads = gr.Slider(1, 32, value=roop.globals.CFG.max_threads, label="Max. Number of Threads", info='default: 3', step=1.0, interactive=True)
             with gr.Column():
-                max_ram_gb = gr.Slider(0, 128, value=roop.globals.CFG.max_ram_gb, label="Max. RAM to use (Gb)", info='0 meaning auto/unset', step=1.0, interactive=True)
-                max_vram_gb = gr.Slider(0, 64, value=roop.globals.CFG.max_vram_gb, label="Max. VRAM to use (Gb)", info='0 meaning auto/unset', step=0.5, interactive=True)
-                staged_chunk_size = gr.Slider(0, 480, value=roop.globals.CFG.staged_chunk_size, label="Staged Chunk Size", info='0 meaning auto/unset', step=1.0, interactive=True)
+                staged_chunk_size = gr.Slider(8, 480, value=roop.globals.CFG.staged_chunk_size, label="Staged Chunk Size", info='Frames scheduled per staged chunk', step=1.0, interactive=True)
+                prefetch_frames = gr.Slider(1, 256, value=roop.globals.CFG.prefetch_frames, label="Prefetch Frames", info='Bounded decode queue size for staged reads', step=1.0, interactive=True)
                 detect_pack_frame_count = gr.Slider(8, 1024, value=roop.globals.CFG.detect_pack_frame_count, label="Detect Pack Frame Count", info='Packed detect metadata frames per cache blob', step=8.0, interactive=True)
+                single_batch_workers = gr.Slider(1, 8, value=roop.globals.CFG.single_batch_workers, label="Single-Batch Workers", info='Parallel worker sessions for models limited to batch=1', step=1.0, interactive=True)
                 settings_controls.append(gr.Dropdown(image_formats, label="Image Output Format", info='default: png', value=roop.globals.CFG.output_image_format, elem_id='output_image_format', interactive=True))
             with gr.Column():
+                swap_batch_size = gr.Slider(1, 256, value=roop.globals.CFG.swap_batch_size, label="Swap Batch Size", info='Requested batch size for swap-capable models', step=1.0, interactive=True)
+                mask_batch_size = gr.Slider(1, 512, value=roop.globals.CFG.mask_batch_size, label="Mask Batch Size", info='Requested batch size for masking models', step=1.0, interactive=True)
+                enhance_batch_size = gr.Slider(1, 128, value=roop.globals.CFG.enhance_batch_size, label="Enhance Batch Size", info='Requested batch size for enhancer models', step=1.0, interactive=True)
                 settings_controls.append(gr.Dropdown(video_codecs, label="Video Codec", info='default: libx264', value=roop.globals.CFG.output_video_codec, elem_id='output_video_codec', interactive=True))
                 settings_controls.append(gr.Dropdown(video_formats, label="Video Output Format", info='default: mp4', value=roop.globals.CFG.output_video_format, elem_id='output_video_format', interactive=True))
                 video_quality = gr.Slider(0, 100, value=roop.globals.CFG.video_quality, label="Video Quality (crf)", info='default: 14', step=1.0, interactive=True)
@@ -71,10 +73,13 @@ def settings_tab():
     for s in settings_controls:
         s.select(fn=on_settings_changed, outputs=[memory_status])
     max_threads.input(fn=lambda a,b='max_threads':on_settings_changed_misc(a,b), inputs=[max_threads], outputs=[memory_status])
-    max_ram_gb.input(fn=lambda a,b='max_ram_gb':on_settings_changed_misc(a,b), inputs=[max_ram_gb], outputs=[memory_status])
-    max_vram_gb.input(fn=lambda a,b='max_vram_gb':on_settings_changed_misc(a,b), inputs=[max_vram_gb], outputs=[memory_status])
     staged_chunk_size.input(fn=lambda a,b='staged_chunk_size':on_settings_changed_misc(a,b), inputs=[staged_chunk_size], outputs=[memory_status])
+    prefetch_frames.input(fn=lambda a,b='prefetch_frames':on_settings_changed_misc(a,b), inputs=[prefetch_frames], outputs=[memory_status])
     detect_pack_frame_count.input(fn=lambda a,b='detect_pack_frame_count':on_settings_changed_misc(a,b), inputs=[detect_pack_frame_count], outputs=[memory_status])
+    single_batch_workers.input(fn=lambda a,b='single_batch_workers':on_settings_changed_misc(a,b), inputs=[single_batch_workers], outputs=[memory_status])
+    swap_batch_size.input(fn=lambda a,b='swap_batch_size':on_settings_changed_misc(a,b), inputs=[swap_batch_size], outputs=[memory_status])
+    mask_batch_size.input(fn=lambda a,b='mask_batch_size':on_settings_changed_misc(a,b), inputs=[mask_batch_size], outputs=[memory_status])
+    enhance_batch_size.input(fn=lambda a,b='enhance_batch_size':on_settings_changed_misc(a,b), inputs=[enhance_batch_size], outputs=[memory_status])
     video_quality.input(fn=lambda a,b='video_quality':on_settings_changed_misc(a,b), inputs=[video_quality], outputs=[memory_status])
 
     button_clean_temp.click(fn=clean_temp)
@@ -126,11 +131,19 @@ def on_option_changed(evt: gr.SelectData):
 
 def on_settings_changed_misc(new_val, attribname):
     if hasattr(roop.globals.CFG, attribname):
-        if attribname in ('max_threads', 'video_quality', 'staged_chunk_size', 'detect_pack_frame_count'):
+        if attribname in (
+            'max_threads',
+            'video_quality',
+            'staged_chunk_size',
+            'prefetch_frames',
+            'detect_pack_frame_count',
+            'single_batch_workers',
+            'swap_batch_size',
+            'mask_batch_size',
+            'enhance_batch_size',
+        ):
             new_val = int(new_val)
         setattr(roop.globals.CFG, attribname, new_val)
-        if attribname == 'max_ram_gb':
-            roop.globals.CFG.memory_limit = new_val
     else:
         print("Didn't find attrib!")
     return update_memory_status()
@@ -169,7 +182,6 @@ def apply_settings(input_server_name, input_server_port, output_template):
     roop.globals.CFG.server_name = input_server_name
     roop.globals.CFG.server_port = input_server_port
     roop.globals.CFG.output_template = output_template
-    roop.globals.CFG.memory_limit = roop.globals.CFG.max_ram_gb
     roop.globals.CFG.save()
     show_msg('Settings saved')
     return update_memory_status()

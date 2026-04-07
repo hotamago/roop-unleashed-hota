@@ -19,6 +19,8 @@ class Enhance_CodeFormer():
     processorname = 'codeformer'
     type = 'enhance'
     supports_batch = True
+    batch_size_limit = None
+    supports_parallel_single_batch = True
     
 
     def Initialize(self, plugin_options:dict):
@@ -37,15 +39,58 @@ class Enhance_CodeFormer():
             self.io_binding = self.model_codeformer.io_binding()           
             self.io_binding.bind_cpu_input(self.model_inputs[1].name, np.array([0.5]))
             self.io_binding.bind_output(model_outputs[0].name, self.devicename)
+        self.batch_size_limit = self._resolve_batch_size_limit()
+        self.supports_batch = self.batch_size_limit is None or self.batch_size_limit > 1
+
+
+    def _resolve_batch_size_limit(self):
+        if self.model_codeformer is None:
+            return 1
+        batch_size_limit = None
+        for input_meta in self.model_codeformer.get_inputs():
+            shape = getattr(input_meta, "shape", None) or []
+            if len(shape) < 1:
+                continue
+            batch_dim = shape[0]
+            if isinstance(batch_dim, int) and batch_dim > 0:
+                batch_size_limit = batch_dim if batch_size_limit is None else min(batch_size_limit, batch_dim)
+        return batch_size_limit
+
+
+    def _effective_batch_size(self, requested_batch_size):
+        effective_batch_size = max(1, int(requested_batch_size))
+        if self.batch_size_limit is not None:
+            effective_batch_size = min(effective_batch_size, max(1, int(self.batch_size_limit)))
+        return effective_batch_size
+
+
+    def CreateWorkerProcessor(self):
+        worker = Enhance_CodeFormer()
+        worker.Initialize(dict(self.plugin_options or {}))
+        return worker
+
+
+    def _preprocess_frame(self, temp_frame):
+        temp_frame = cv2.resize(temp_frame, (512, 512), cv2.INTER_CUBIC)
+        temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
+        temp_frame = temp_frame.astype('float32') / 255.0
+        temp_frame = (temp_frame - 0.5) / 0.5
+        return temp_frame
+
+
+    def _postprocess_frame(self, result):
+        result = result.transpose((1, 2, 0))
+        result = np.clip(result, -1.0, 1.0)
+        result = (result + 1.0) / 2.0
+        result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+        result = (result * 255.0).round()
+        return result.astype(np.uint8)
 
 
     def Run(self, source_faceset: FaceSet, target_face: Face, temp_frame: Frame) -> Frame:
         input_size = temp_frame.shape[1]
         # preprocess
-        temp_frame = cv2.resize(temp_frame, (512, 512), cv2.INTER_CUBIC)
-        temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
-        temp_frame = temp_frame.astype('float32') / 255.0
-        temp_frame = (temp_frame - 0.5) / 0.5
+        temp_frame = self._preprocess_frame(temp_frame)
         temp_frame = np.expand_dims(temp_frame, axis=0).transpose(0, 3, 1, 2)
         
         self.io_binding.bind_cpu_input(self.model_inputs[0].name, temp_frame.astype(np.float32))
@@ -55,42 +100,36 @@ class Enhance_CodeFormer():
         del ort_outs
         
         # post-process
-        result = result.transpose((1, 2, 0))
-
-        un_min = -1.0
-        un_max = 1.0
-        result = np.clip(result, un_min, un_max)
-        result = (result - un_min) / (un_max - un_min)
-
-        result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
-        result = (result * 255.0).round()
+        result = self._postprocess_frame(result)
         scale_factor = int(result.shape[1] / input_size)       
-        return result.astype(np.uint8), scale_factor
+        return result, scale_factor
 
 
     def RunBatch(self, source_facesets, target_faces, temp_frames, batch_size=1):
         outputs = []
-        for batch_start in range(0, len(temp_frames), max(1, batch_size)):
+        effective_batch_size = self._effective_batch_size(batch_size)
+        for batch_start in range(0, len(temp_frames), effective_batch_size):
             batch = []
-            for temp_frame in temp_frames[batch_start:batch_start + max(1, batch_size)]:
-                temp_frame = cv2.resize(temp_frame, (512, 512), cv2.INTER_CUBIC)
-                temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
-                temp_frame = temp_frame.astype('float32') / 255.0
-                temp_frame = (temp_frame - 0.5) / 0.5
+            current_batch = temp_frames[batch_start:batch_start + effective_batch_size]
+            for temp_frame in current_batch:
+                temp_frame = self._preprocess_frame(temp_frame)
                 batch.append(temp_frame.transpose(2, 0, 1))
             batch_input = np.stack(batch, axis=0).astype(np.float32)
-            weight = np.full((len(batch),), 0.5, dtype=np.float32)
-            batch_outputs = self.model_codeformer.run(None, {
-                self.model_inputs[0].name: batch_input,
-                self.model_inputs[1].name: weight
-            })[0]
+            weight = np.full((len(current_batch),), 0.5, dtype=np.float32)
+            try:
+                batch_outputs = self.model_codeformer.run(None, {
+                    self.model_inputs[0].name: batch_input,
+                    self.model_inputs[1].name: weight
+                })[0]
+            except Exception as exc:
+                should_disable_batch = batch_input.shape[0] > 1 and "Got invalid dimensions for input" in str(exc)
+                if not should_disable_batch:
+                    raise
+                self.batch_size_limit = 1
+                self.supports_batch = False
+                return self.RunBatch(source_facesets, target_faces, temp_frames, batch_size=1)
             for result in batch_outputs:
-                result = result.transpose((1, 2, 0))
-                result = np.clip(result, -1.0, 1.0)
-                result = (result + 1.0) / 2.0
-                result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
-                result = (result * 255.0).round()
-                outputs.append(result.astype(np.uint8))
+                outputs.append(self._postprocess_frame(result))
         return outputs
 
 

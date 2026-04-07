@@ -38,7 +38,7 @@ default_det_size = True
 no_face_action = 1
 
 processing = False
-runtime_memory_status = 'Memory budget: not computed yet'
+runtime_memory_status = 'Resource tuning: not computed yet'
 active_memory_plan = None
 runtime_processing_status = 'Idle'
 runtime_processing_markdown = '**Process Info**\n- Status: Idle'

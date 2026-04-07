@@ -31,13 +31,25 @@ class Settings:
         self.video_quality = self.default_get(data, 'video_quality', 14)
         self.clear_output = self.default_get(data, 'clear_output', True)
         self.max_threads = self.default_get(data, 'max_threads', 2)
-        legacy_memory_limit = self.default_get(data, 'memory_limit', 0)
-        self.memory_mode = self.default_get(data, 'memory_mode', 'smart')
-        self.max_ram_gb = self.default_get(data, 'max_ram_gb', legacy_memory_limit)
-        self.max_vram_gb = self.default_get(data, 'max_vram_gb', 0)
         self.detect_pack_frame_count = self.default_get(data, 'detect_pack_frame_count', 256)
-        self.staged_chunk_size = self.default_get(data, 'staged_chunk_size', 0)
-        self.memory_limit = self.max_ram_gb
+        self.staged_chunk_size = self.default_get(data, 'staged_chunk_size', 96)
+        if not self.staged_chunk_size or self.staged_chunk_size <= 0:
+            self.staged_chunk_size = 96
+        self.prefetch_frames = self.default_get(data, 'prefetch_frames', 24)
+        if not self.prefetch_frames or self.prefetch_frames <= 0:
+            self.prefetch_frames = 24
+        self.swap_batch_size = self.default_get(data, 'swap_batch_size', 32)
+        if not self.swap_batch_size or self.swap_batch_size <= 0:
+            self.swap_batch_size = 32
+        self.mask_batch_size = self.default_get(data, 'mask_batch_size', 64)
+        if not self.mask_batch_size or self.mask_batch_size <= 0:
+            self.mask_batch_size = 64
+        self.enhance_batch_size = self.default_get(data, 'enhance_batch_size', 8)
+        if not self.enhance_batch_size or self.enhance_batch_size <= 0:
+            self.enhance_batch_size = 8
+        self.single_batch_workers = self.default_get(data, 'single_batch_workers', 1)
+        if not self.single_batch_workers or self.single_batch_workers <= 0:
+            self.single_batch_workers = 1
         self.provider = self.default_get(data, 'provider', 'cuda')
         self.force_cpu = self.default_get(data, 'force_cpu', False)
         self.output_template = self.default_get(data, 'output_template', '{file}_{time}')
@@ -95,12 +107,13 @@ class Settings:
             'video_quality' : self.video_quality,
             'clear_output' : self.clear_output,
             'max_threads' : self.max_threads,
-            'memory_mode': self.memory_mode,
-            'max_ram_gb': self.max_ram_gb,
-            'max_vram_gb': self.max_vram_gb,
             'detect_pack_frame_count': self.detect_pack_frame_count,
             'staged_chunk_size': self.staged_chunk_size,
-            'memory_limit' : self.max_ram_gb,
+            'prefetch_frames': self.prefetch_frames,
+            'swap_batch_size': self.swap_batch_size,
+            'mask_batch_size': self.mask_batch_size,
+            'enhance_batch_size': self.enhance_batch_size,
+            'single_batch_workers': self.single_batch_workers,
             'provider' : self.provider,
             'force_cpu' : self.force_cpu,
             'output_template' : self.output_template,

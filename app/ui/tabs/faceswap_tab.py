@@ -794,10 +794,10 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     roop.globals.execution_threads = roop.globals.CFG.max_threads
     roop.globals.video_encoder = roop.globals.CFG.output_video_codec
     roop.globals.video_quality = roop.globals.CFG.video_quality
-    roop.globals.max_memory = roop.globals.CFG.max_ram_gb if roop.globals.CFG.max_ram_gb > 0 else None
-    roop.globals.max_vram = roop.globals.CFG.max_vram_gb if roop.globals.CFG.max_vram_gb > 0 else None
+    roop.globals.max_memory = None
+    roop.globals.max_vram = None
     set_memory_status(describe_memory_plan(resolve_memory_plan()))
-    set_processing_message("Preparing faceswap job", stage="prepare", detail="Resolving memory budget and worker plan", force_log=True)
+    set_processing_message("Preparing faceswap job", stage="prepare", detail="Resolving staged resource tuning and worker plan", force_log=True)
     gr.Info(roop.globals.runtime_memory_status)
 
     batch_process_regular(output_method, list_files_process, mask_engine, clip_text, processing_method, imagemask, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX)

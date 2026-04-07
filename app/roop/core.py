@@ -478,8 +478,8 @@ def run() -> None:
     roop.globals.execution_threads = roop.globals.CFG.max_threads
     roop.globals.video_encoder = roop.globals.CFG.output_video_codec
     roop.globals.video_quality = roop.globals.CFG.video_quality
-    roop.globals.max_memory = roop.globals.CFG.max_ram_gb if roop.globals.CFG.max_ram_gb > 0 else None
-    roop.globals.max_vram = roop.globals.CFG.max_vram_gb if roop.globals.CFG.max_vram_gb > 0 else None
+    roop.globals.max_memory = None
+    roop.globals.max_vram = None
     if roop.globals.startup_args.server_share:
         roop.globals.CFG.server_share = True
     main.run()

@@ -20,6 +20,9 @@ class FakeSingleBatchProcessor:
     def Release(self):
         self.released = True
 
+    def Run(self, source_face, target_face, frame):
+        return np.full_like(frame, self.worker_id + 1), 1
+
 
 def test_process_mgr_parallelizes_single_batch_processors(monkeypatch):
     mgr = ProcessMgr(None)
@@ -48,6 +51,27 @@ def test_process_mgr_parallelizes_single_batch_processors(monkeypatch):
 def test_process_mgr_single_batch_worker_count_uses_memory_plan(monkeypatch):
     mgr = ProcessMgr(None)
     processor = FakeSingleBatchProcessor()
-    monkeypatch.setattr(roop.globals, "active_memory_plan", {"swap_single_batch_workers": 3}, raising=False)
+    monkeypatch.setattr(roop.globals, "active_memory_plan", {"single_batch_workers": 3}, raising=False)
 
     assert mgr.get_single_batch_worker_count(processor) == 3
+
+
+def test_process_mgr_parallelizes_single_batch_enhancers(monkeypatch):
+    mgr = ProcessMgr(None)
+    mgr.input_face_datas = [SimpleNamespace(faces=[])]
+    mgr.deserialize_face = lambda payload: payload
+    monkeypatch.setattr(mgr, "get_single_batch_worker_count", lambda processor: 2)
+
+    tasks = [
+        {"cache_key": "task_a", "input_index": 0, "target_face": {"id": "a"}},
+        {"cache_key": "task_b", "input_index": 0, "target_face": {"id": "b"}},
+    ]
+    current_frames = [
+        np.zeros((2, 2, 3), dtype=np.uint8),
+        np.zeros((2, 2, 3), dtype=np.uint8),
+    ]
+
+    outputs = mgr.run_enhance_tasks_batch(tasks, current_frames, FakeSingleBatchProcessor(), batch_size=8)
+
+    assert set(outputs.keys()) == {"task_a", "task_b"}
+    assert all(isinstance(value, np.ndarray) for value in outputs.values())

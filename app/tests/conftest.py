@@ -15,16 +15,18 @@ def reset_runtime_globals(monkeypatch):
     import roop.globals
 
     cfg = SimpleNamespace(
-        memory_mode="smart",
-        max_ram_gb=0,
-        max_vram_gb=0,
         detect_pack_frame_count=256,
-        staged_chunk_size=0,
+        staged_chunk_size=96,
+        prefetch_frames=24,
+        swap_batch_size=32,
+        mask_batch_size=64,
+        enhance_batch_size=8,
+        single_batch_workers=1,
     )
     monkeypatch.setattr(roop.globals, "CFG", cfg, raising=False)
     monkeypatch.setattr(roop.globals, "processing", True, raising=False)
     monkeypatch.setattr(roop.globals, "execution_providers", ["CUDAExecutionProvider", "CPUExecutionProvider"], raising=False)
-    monkeypatch.setattr(roop.globals, "runtime_memory_status", "Memory budget: not computed yet", raising=False)
+    monkeypatch.setattr(roop.globals, "runtime_memory_status", "Resource tuning: not computed yet", raising=False)
     monkeypatch.setattr(roop.globals, "active_memory_plan", None, raising=False)
     monkeypatch.setattr(roop.globals, "runtime_processing_status", "Idle", raising=False)
     monkeypatch.setattr(roop.globals, "runtime_processing_markdown", "**Process Info**\n- Status: Idle", raising=False)

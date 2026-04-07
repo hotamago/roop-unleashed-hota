@@ -132,11 +132,13 @@ def get_entry_signature(entry, options, output_method):
         "targets": hash_target_faces(roop.globals.TARGET_FACES),
         "provider": str(roop.globals.execution_providers),
         "output_method": output_method,
-        "memory_mode": roop.globals.CFG.memory_mode,
-        "max_ram_gb": roop.globals.CFG.max_ram_gb,
-        "max_vram_gb": roop.globals.CFG.max_vram_gb,
         "detect_pack_frame_count": getattr(roop.globals.CFG, "detect_pack_frame_count", DETECT_PACK_FRAME_COUNT),
-        "staged_chunk_size": getattr(roop.globals.CFG, "staged_chunk_size", 0),
+        "staged_chunk_size": getattr(roop.globals.CFG, "staged_chunk_size", 96),
+        "prefetch_frames": getattr(roop.globals.CFG, "prefetch_frames", 24),
+        "swap_batch_size": getattr(roop.globals.CFG, "swap_batch_size", 32),
+        "mask_batch_size": getattr(roop.globals.CFG, "mask_batch_size", 64),
+        "enhance_batch_size": getattr(roop.globals.CFG, "enhance_batch_size", 8),
+        "single_batch_workers": getattr(roop.globals.CFG, "single_batch_workers", 1),
         "options": {
             "processors": list(options.processors.keys()),
             "face_distance_threshold": options.face_distance_threshold,
@@ -720,7 +722,15 @@ class StagedBatchExecutor:
 
     def get_swap_task_batch_size(self, memory_plan):
         tiles_per_task = max((max(self.options.subsample_size, 128) // 128) ** 2, 1)
-        return max(1, min(64, (max(memory_plan["swap_batch_size"], 1) * 2) // tiles_per_task))
+        native_batch_window = max(1, min(64, (max(memory_plan["swap_batch_size"], 1) * 2) // tiles_per_task))
+        worker_window = max(memory_plan.get("single_batch_workers", 1), 1) * 2
+        return max(native_batch_window, min(64, worker_window))
+
+
+    def get_enhance_task_batch_size(self, memory_plan):
+        requested_batch = max(memory_plan["enhance_batch_size"], 1)
+        worker_window = max(memory_plan.get("single_batch_workers", 1), 1) * 2
+        return max(1, min(64, max(requested_batch, worker_window)))
 
 
     def ensure_full_swap_stage(self, entry, endframe, detect_dir, swap_dir, task_count, stages, manifest, memory_plan):
@@ -888,7 +898,7 @@ class StagedBatchExecutor:
         enhance_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, self.build_stage_options([self.enhancer_name]))
         processor = enhance_mgr.processors[0]
         processed_tasks = 0
-        task_batch_size = max(1, min(64, memory_plan["enhance_batch_size"]))
+        task_batch_size = self.get_enhance_task_batch_size(memory_plan)
         try:
             for pack_data in self.iter_detect_packs(detect_dir):
                 pack_tasks = self.flatten_pack_tasks(pack_data)
@@ -922,19 +932,10 @@ class StagedBatchExecutor:
 
 
     def process_full_enhance_batch(self, task_batch, input_cache, output_cache, output_cache_path, enhance_mgr, processor, processed_tasks, task_count, memory_plan):
-        if getattr(processor, "supports_batch", False):
-            current_frames = [input_cache[task_meta["cache_key"]] for task_meta in task_batch]
-            source_sets = [roop.globals.INPUT_FACESETS[task_meta["input_index"]] for task_meta in task_batch]
-            target_faces = [enhance_mgr.deserialize_face(task_meta["target_face"]) for task_meta in task_batch]
-            enhanced_frames = processor.RunBatch(source_sets, target_faces, current_frames, memory_plan["enhance_batch_size"])
-            for task_meta, enhanced_frame in zip(task_batch, enhanced_frames):
-                output_cache[task_meta["cache_key"]] = normalize_cache_image(enhanced_frame)
-        else:
-            for task_meta in task_batch:
-                task = dict(task_meta)
-                current_frame = input_cache[task_meta["cache_key"]]
-                enhanced_frame, _ = enhance_mgr.run_enhance_task(task, current_frame, processor)
-                output_cache[task_meta["cache_key"]] = normalize_cache_image(enhanced_frame)
+        current_frames = [input_cache[task_meta["cache_key"]] for task_meta in task_batch]
+        enhanced_frames = enhance_mgr.run_enhance_tasks_batch(task_batch, current_frames, processor, memory_plan["enhance_batch_size"])
+        for task_meta in task_batch:
+            output_cache[task_meta["cache_key"]] = normalize_cache_image(enhanced_frames[task_meta["cache_key"]])
         self.write_stage_cache_map(output_cache_path, output_cache)
         self.update_progress("enhance", detail="Running enhancement stage", step_completed=processed_tasks + len(task_batch), step_total=task_count, step_unit="faces")
 
@@ -1218,35 +1219,21 @@ class StagedBatchExecutor:
         enhance_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, self.build_stage_options([self.enhancer_name]))
         processor = enhance_mgr.processors[0]
         processed_tasks = 0
-        if getattr(processor, "supports_batch", False):
-            for batch in chunked(flat_tasks, memory_plan["enhance_batch_size"]):
-                pending = [(frame_meta, task_meta) for frame_meta, task_meta in batch if task_meta["cache_key"] not in enhance_cache]
-                if not pending:
-                    processed_tasks += len(batch)
-                    self.update_progress("enhance", detail="Reusing packed enhance cache", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
-                    continue
-                current_frames = [input_cache[task_meta["cache_key"]] for _, task_meta in pending]
-                target_faces = [enhance_mgr.deserialize_face(task_meta["target_face"]) for _, task_meta in pending]
-                source_sets = [roop.globals.INPUT_FACESETS[task_meta["input_index"]] for _, task_meta in pending]
-                enhanced_frames = processor.RunBatch(source_sets, target_faces, current_frames, memory_plan["enhance_batch_size"])
-                for (_, task_meta), enhanced_frame in zip(pending, enhanced_frames):
-                    enhance_cache[task_meta["cache_key"]] = normalize_cache_image(enhanced_frame)
-                self.write_stage_cache_map(cache_path, enhance_cache)
+        task_batch_size = self.get_enhance_task_batch_size(memory_plan)
+        for batch in chunked(flat_tasks, task_batch_size):
+            pending = [(frame_meta, task_meta) for frame_meta, task_meta in batch if task_meta["cache_key"] not in enhance_cache]
+            if not pending:
                 processed_tasks += len(batch)
-                self.update_progress("enhance", detail="Running enhancement stage", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
-        else:
-            for _, task_meta in flat_tasks:
-                if task_meta["cache_key"] in enhance_cache:
-                    processed_tasks += 1
-                    self.update_progress("enhance", detail="Reusing packed enhance cache", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
-                    continue
-                task = dict(task_meta)
-                current_frame = input_cache[task_meta["cache_key"]]
-                enhanced_frame, _ = enhance_mgr.run_enhance_task(task, current_frame, processor)
-                enhance_cache[task_meta["cache_key"]] = normalize_cache_image(enhanced_frame)
-                self.write_stage_cache_map(cache_path, enhance_cache)
-                processed_tasks += 1
-                self.update_progress("enhance", detail="Running enhancement stage", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
+                self.update_progress("enhance", detail="Reusing packed enhance cache", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
+                continue
+            current_frames = [input_cache[task_meta["cache_key"]] for _, task_meta in pending]
+            task_batch = [task_meta for _, task_meta in pending]
+            enhanced_frames = enhance_mgr.run_enhance_tasks_batch(task_batch, current_frames, processor, memory_plan["enhance_batch_size"])
+            for task_meta in task_batch:
+                enhance_cache[task_meta["cache_key"]] = normalize_cache_image(enhanced_frames[task_meta["cache_key"]])
+            self.write_stage_cache_map(cache_path, enhance_cache)
+            processed_tasks += len(batch)
+            self.update_progress("enhance", detail="Running enhancement stage", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
         enhance_mgr.release_resources()
         chunk_state["stages"]["enhance"] = True
 

@@ -413,45 +413,23 @@ class ProcessMgr():
     def get_single_batch_worker_count(self, processor):
         if not self.should_parallelize_single_batch(processor):
             return 1
-        vram_budget = None
         active_plan = getattr(roop.globals, "active_memory_plan", None)
         if isinstance(active_plan, dict):
-            vram_budget = active_plan.get("vram_budget_gb")
-            explicit_workers = active_plan.get("swap_single_batch_workers")
+            explicit_workers = active_plan.get("single_batch_workers")
             if explicit_workers is not None:
                 return max(1, int(explicit_workers))
-        if roop.globals.execution_providers and any(name in str(roop.globals.execution_providers[0]) for name in ("CUDAExecutionProvider", "ROCMExecutionProvider", "TensorrtExecutionProvider")):
-            if vram_budget is None or vram_budget < 8.0:
-                return 1
-            if vram_budget < 16.0:
-                return 2
-            if vram_budget < 24.0:
-                return 3
-            return 4
-        return min(max(1, self.num_threads or 1), 4)
+        configured_workers = getattr(roop.globals.CFG, "single_batch_workers", 1)
+        return max(1, int(configured_workers or 1))
 
 
-    def run_prepared_swap_task(self, prepared_task, processor):
-        current_frames = [frame.copy() for frame in prepared_task["current_frames"]]
-        for _ in range(0, self.options.num_swap_steps):
-            next_frames = []
-            for current_frame in current_frames:
-                prepared_frame = self.prepare_crop_frame(current_frame)
-                output = processor.Run(prepared_task["input_face"], prepared_task["target_face"], prepared_frame)
-                next_frames.append(self.normalize_swap_frame(output))
-            current_frames = next_frames
-        model_output_size = 128
-        subsample_total = max(self.options.subsample_size // model_output_size, 1)
-        fake_frame = self.explode_pixel_boost(current_frames, model_output_size, subsample_total, self.options.subsample_size)
-        return fake_frame.astype(np.uint8)
-
-
-    def run_swap_tasks_parallel_single_batch(self, prepared_tasks, processor):
+    def run_tasks_parallel_single_batch(self, prepared_tasks, processor, run_task):
+        if not prepared_tasks:
+            return {}
         worker_count = min(self.get_single_batch_worker_count(processor), len(prepared_tasks))
         if worker_count <= 1:
             outputs = {}
             for prepared_task in prepared_tasks:
-                outputs[prepared_task["cache_key"]] = self.run_prepared_swap_task(prepared_task, processor)
+                outputs[prepared_task["cache_key"]] = run_task(prepared_task, processor)
             return outputs
 
         worker_processors = [processor]
@@ -470,9 +448,9 @@ class ProcessMgr():
                     if worker_error["exc"] is not None:
                         continue
                     prepared_task = item
-                    fake_frame = self.run_prepared_swap_task(prepared_task, worker_processor)
+                    result = run_task(prepared_task, worker_processor)
                     with output_lock:
-                        outputs[prepared_task["cache_key"]] = fake_frame
+                        outputs[prepared_task["cache_key"]] = result
                 except Exception as exc:
                     with output_lock:
                         if worker_error["exc"] is None:
@@ -502,6 +480,25 @@ class ProcessMgr():
         return outputs
 
 
+    def run_prepared_swap_task(self, prepared_task, processor):
+        current_frames = [frame.copy() for frame in prepared_task["current_frames"]]
+        for _ in range(0, self.options.num_swap_steps):
+            next_frames = []
+            for current_frame in current_frames:
+                prepared_frame = self.prepare_crop_frame(current_frame)
+                output = processor.Run(prepared_task["input_face"], prepared_task["target_face"], prepared_frame)
+                next_frames.append(self.normalize_swap_frame(output))
+            current_frames = next_frames
+        model_output_size = 128
+        subsample_total = max(self.options.subsample_size // model_output_size, 1)
+        fake_frame = self.explode_pixel_boost(current_frames, model_output_size, subsample_total, self.options.subsample_size)
+        return fake_frame.astype(np.uint8)
+
+
+    def run_swap_tasks_parallel_single_batch(self, prepared_tasks, processor):
+        return self.run_tasks_parallel_single_batch(prepared_tasks, processor, self.run_prepared_swap_task)
+
+
     def run_mask_task(self, task, current_frame, processor):
         return self.process_mask(processor, task["aligned_frame"], current_frame)
 
@@ -510,6 +507,42 @@ class ProcessMgr():
         target_face = self.deserialize_face(task["target_face"])
         input_faceset = self.input_face_datas[task["input_index"]] if len(self.input_face_datas) > task["input_index"] else None
         return processor.Run(input_faceset, target_face, current_frame)
+
+
+    def run_prepared_enhance_task(self, prepared_task, processor):
+        enhanced_frame, _ = processor.Run(prepared_task["input_faceset"], prepared_task["target_face"], prepared_task["current_frame"])
+        return enhanced_frame
+
+
+    def run_enhance_tasks_batch(self, tasks, current_frames, processor, batch_size: int = 1):
+        if not tasks:
+            return {}
+        prepared_tasks = []
+        for task, current_frame in zip(tasks, current_frames):
+            prepared_tasks.append({
+                "cache_key": task["cache_key"],
+                "input_faceset": self.input_face_datas[task["input_index"]] if len(self.input_face_datas) > task["input_index"] else None,
+                "target_face": self.deserialize_face(task["target_face"]),
+                "current_frame": current_frame,
+            })
+
+        if self.should_parallelize_single_batch(processor):
+            return self.run_tasks_parallel_single_batch(prepared_tasks, processor, self.run_prepared_enhance_task)
+
+        if getattr(processor, "supports_batch", False):
+            source_sets = [prepared_task["input_faceset"] for prepared_task in prepared_tasks]
+            target_faces = [prepared_task["target_face"] for prepared_task in prepared_tasks]
+            batch_frames = [prepared_task["current_frame"] for prepared_task in prepared_tasks]
+            enhanced_frames = processor.RunBatch(source_sets, target_faces, batch_frames, max(1, batch_size))
+            return {
+                prepared_task["cache_key"]: enhanced_frame
+                for prepared_task, enhanced_frame in zip(prepared_tasks, enhanced_frames)
+            }
+
+        outputs = {}
+        for prepared_task in prepared_tasks:
+            outputs[prepared_task["cache_key"]] = self.run_prepared_enhance_task(prepared_task, processor)
+        return outputs
 
 
     def compose_task(self, base_frame, task, fake_frame, enhanced_frame=None):
