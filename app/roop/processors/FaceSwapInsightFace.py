@@ -16,6 +16,7 @@ class FaceSwapInsightFace():
     processorname = 'faceswap'
     type = 'swap'
     supports_batch = True
+    batch_size_limit = None
 
 
     def Initialize(self, plugin_options:dict):
@@ -35,6 +36,29 @@ class FaceSwapInsightFace():
             sess_options = onnxruntime.SessionOptions()
             sess_options.enable_cpu_mem_arena = False
             self.model_swap_insightface = onnxruntime.InferenceSession(model_path, sess_options, providers=roop.globals.execution_providers)
+            self.batch_size_limit = self._resolve_batch_size_limit()
+            self.supports_batch = self.batch_size_limit is None or self.batch_size_limit > 1
+
+
+    def _resolve_batch_size_limit(self):
+        if self.model_swap_insightface is None:
+            return 1
+        batch_size_limit = None
+        for input_meta in self.model_swap_insightface.get_inputs():
+            shape = getattr(input_meta, "shape", None) or []
+            if len(shape) < 1:
+                continue
+            batch_dim = shape[0]
+            if isinstance(batch_dim, int) and batch_dim > 0:
+                batch_size_limit = batch_dim if batch_size_limit is None else min(batch_size_limit, batch_dim)
+        return batch_size_limit
+
+
+    def _effective_batch_size(self, requested_batch_size):
+        effective_batch_size = max(1, int(requested_batch_size))
+        if self.batch_size_limit is not None:
+            effective_batch_size = min(effective_batch_size, max(1, int(self.batch_size_limit)))
+        return effective_batch_size
 
 
 
@@ -53,8 +77,9 @@ class FaceSwapInsightFace():
 
     def RunBatch(self, source_faces, target_faces, temp_frames, batch_size=1):
         outputs = []
-        for batch_start in range(0, len(temp_frames), max(1, batch_size)):
-            batch_end = batch_start + max(1, batch_size)
+        effective_batch_size = self._effective_batch_size(batch_size)
+        for batch_start in range(0, len(temp_frames), effective_batch_size):
+            batch_end = batch_start + effective_batch_size
             batch_frames = np.concatenate(temp_frames[batch_start:batch_end], axis=0).astype(np.float32)
             latents = []
             for source_face in source_faces[batch_start:batch_end]:
@@ -63,7 +88,15 @@ class FaceSwapInsightFace():
                 latent /= np.linalg.norm(latent)
                 latents.append(latent.astype(np.float32))
             batch_latents = np.concatenate(latents, axis=0)
-            batch_outputs = self.model_swap_insightface.run(None, {"target": batch_frames, "source": batch_latents})[0]
+            try:
+                batch_outputs = self.model_swap_insightface.run(None, {"target": batch_frames, "source": batch_latents})[0]
+            except Exception as exc:
+                should_disable_batch = batch_frames.shape[0] > 1 and "Got invalid dimensions for input: target" in str(exc)
+                if not should_disable_batch:
+                    raise
+                self.batch_size_limit = 1
+                self.supports_batch = False
+                return self.RunBatch(source_faces, target_faces, temp_frames, batch_size=1)
             outputs.extend([output for output in batch_outputs])
         return outputs
 
