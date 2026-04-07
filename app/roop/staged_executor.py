@@ -14,6 +14,7 @@ import numpy as np
 import roop.globals
 import roop.util_ffmpeg as ffmpeg
 import roop.utilities as util
+from roop.cache_paths import get_jobs_root as get_persistent_jobs_root
 from roop.ProcessMgr import ProcessMgr
 from roop.ProcessOptions import ProcessOptions
 from roop.capturer import get_image_frame, get_video_frame_total
@@ -28,9 +29,7 @@ except Exception:
 
 
 def get_jobs_root():
-    jobs_root = Path(os.environ.get("TEMP", os.getcwd())) / "jobs"
-    jobs_root.mkdir(parents=True, exist_ok=True)
-    return jobs_root
+    return get_persistent_jobs_root()
 
 
 def make_json_safe(value):

@@ -4,6 +4,7 @@ import gradio as gr
 import roop.globals
 import ui.globals
 import json
+from roop.cache_paths import get_jobs_root
 from roop.memory import describe_memory_plan, resolve_memory_plan
 
 image_formats = ['jpg','png', 'webp']
@@ -197,7 +198,7 @@ def update_memory_status():
 
 
 def clean_processing_cache():
-    jobs_dir = os.path.join(os.environ.get("TEMP", os.getcwd()), "jobs")
+    jobs_dir = str(get_jobs_root())
     if os.path.isdir(jobs_dir):
         shutil.rmtree(jobs_dir)
     os.makedirs(jobs_dir, exist_ok=True)

@@ -6,6 +6,7 @@ import gradio as gr
 import roop.globals
 import roop.metadata
 import roop.utilities as util
+from roop.cache_paths import get_gradio_temp_root
 import ui.globals as uii
 import ui.globals
 
@@ -28,7 +29,7 @@ def prepare_environment():
     if not roop.globals.CFG.use_os_temp_folder:
         os.environ["TEMP"] = os.environ["TMP"] = os.path.abspath(os.path.join(os.getcwd(), "temp"))
     os.makedirs(os.environ["TEMP"], exist_ok=True)
-    os.environ["GRADIO_TEMP_DIR"] = os.environ["TEMP"]
+    os.environ["GRADIO_TEMP_DIR"] = str(get_gradio_temp_root())
     os.environ['GRADIO_ANALYTICS_ENABLED'] = '0'
 
 def run():
