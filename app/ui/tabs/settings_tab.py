@@ -48,7 +48,7 @@ def settings_tab():
                 staged_chunk_size = gr.Slider(8, 480, value=roop.globals.CFG.staged_chunk_size, label="Staged Chunk Size", info='Frames scheduled per staged chunk', step=1.0, interactive=True)
                 prefetch_frames = gr.Slider(1, 256, value=roop.globals.CFG.prefetch_frames, label="Prefetch Frames", info='Bounded decode queue size for staged reads', step=1.0, interactive=True)
                 detect_pack_frame_count = gr.Slider(8, 1024, value=roop.globals.CFG.detect_pack_frame_count, label="Detect Pack Frame Count", info='Packed detect metadata frames per cache blob', step=8.0, interactive=True)
-                single_batch_workers = gr.Slider(1, 8, value=roop.globals.CFG.single_batch_workers, label="Single-Batch Workers", info='Parallel worker sessions for models limited to batch=1', step=1.0, interactive=True)
+                single_batch_workers = gr.Slider(1, 8, value=roop.globals.CFG.single_batch_workers, label="Single-Batch Workers", info='Parallel worker sessions for models limited to batch=1. GPU runtime is capped to 1 worker to avoid session/VRAM thrash.', step=1.0, interactive=True)
                 settings_controls.append(gr.Dropdown(image_formats, label="Image Output Format", info='default: png', value=roop.globals.CFG.output_image_format, elem_id='output_image_format', interactive=True))
             with gr.Column():
                 swap_batch_size = gr.Slider(1, 256, value=roop.globals.CFG.swap_batch_size, label="Swap Batch Size", info='Requested batch size for swap-capable models', step=1.0, interactive=True)

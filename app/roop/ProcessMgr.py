@@ -8,6 +8,7 @@ from roop.ProcessOptions import ProcessOptions
 
 from roop.face_util import align_crop, get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values
 from roop.utilities import compute_cosine_distance, get_device, str_to_class
+from roop.memory import resolve_single_batch_workers
 import roop.vr_util as vr
 
 from typing import Any, List, Callable
@@ -420,8 +421,8 @@ class ProcessMgr():
             explicit_workers = active_plan.get("single_batch_workers")
             if explicit_workers is not None:
                 return max(1, int(explicit_workers))
-        configured_workers = getattr(roop.globals.CFG, "single_batch_workers", 1)
-        return max(1, int(configured_workers or 1))
+        effective_workers, _, _ = resolve_single_batch_workers(getattr(roop.globals.CFG, "single_batch_workers", 1))
+        return max(1, int(effective_workers))
 
 
     def get_single_batch_worker_processors(self, processor, worker_count):

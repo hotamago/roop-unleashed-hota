@@ -19,7 +19,7 @@ from roop.ProcessMgr import ProcessMgr
 from roop.ProcessOptions import ProcessOptions
 from roop.capturer import get_image_frame, get_video_frame_total
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
-from roop.memory import describe_memory_plan, resolve_memory_plan
+from roop.memory import describe_memory_plan, resolve_memory_plan, resolve_single_batch_workers
 from roop.progress_status import get_processing_status_line, publish_processing_progress, set_memory_status
 
 try:
@@ -118,6 +118,7 @@ DETECT_PACK_FRAME_COUNT = 256
 
 def get_entry_signature(entry, options, output_method):
     stat = os.stat(entry.filename)
+    effective_single_batch_workers, _, _ = resolve_single_batch_workers(getattr(roop.globals.CFG, "single_batch_workers", 1))
     signature = {
         "pipeline_version": PIPELINE_VERSION,
         "file": {
@@ -137,7 +138,7 @@ def get_entry_signature(entry, options, output_method):
         "swap_batch_size": getattr(roop.globals.CFG, "swap_batch_size", 32),
         "mask_batch_size": getattr(roop.globals.CFG, "mask_batch_size", 64),
         "enhance_batch_size": getattr(roop.globals.CFG, "enhance_batch_size", 8),
-        "single_batch_workers": getattr(roop.globals.CFG, "single_batch_workers", 1),
+        "single_batch_workers": effective_single_batch_workers,
         "options": {
             "processors": list(options.processors.keys()),
             "face_distance_threshold": options.face_distance_threshold,

@@ -71,3 +71,19 @@ def test_entry_signature_changes_when_cache_shaping_config_changes(tmp_path, mon
 
     assert sig_a != sig_b
     assert sig_a != sig_c
+
+
+def test_entry_signature_uses_effective_single_batch_workers(tmp_path, monkeypatch):
+    media_path = tmp_path / "clip.mp4"
+    media_path.write_bytes(b"test-video")
+    entry = ProcessEntry(str(media_path), 0, 10, 30.0)
+    options = make_options({"faceswap": {}})
+
+    monkeypatch.setattr("roop.staged_executor.resolve_single_batch_workers", lambda configured_workers: (1, configured_workers, "GPU-safe cap"))
+    monkeypatch.setattr(roop.globals.CFG, "single_batch_workers", 2, raising=False)
+    sig_a = get_entry_signature(entry, options, "File")
+
+    monkeypatch.setattr(roop.globals.CFG, "single_batch_workers", 4, raising=False)
+    sig_b = get_entry_signature(entry, options, "File")
+
+    assert sig_a == sig_b

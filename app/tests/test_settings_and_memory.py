@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 import roop.globals
-from roop.memory import describe_memory_plan, resolve_memory_plan
+from roop.memory import describe_memory_plan, resolve_memory_plan, resolve_single_batch_workers
 from settings import Settings
 
 
@@ -39,6 +39,7 @@ def test_settings_loads_and_persists_manual_stage_tuning(tmp_path):
 
 
 def test_resolve_memory_plan_uses_manual_stage_tuning(monkeypatch):
+    monkeypatch.setattr("roop.memory.provider_uses_gpu", lambda: False)
     monkeypatch.setattr(
         roop.globals,
         "CFG",
@@ -66,3 +67,40 @@ def test_resolve_memory_plan_uses_manual_stage_tuning(monkeypatch):
     assert plan["single_batch_workers"] == 3
     assert plan["detect_pack_frame_count"] == 320
     assert "single-batch workers=3" in describe_memory_plan(plan)
+
+
+def test_resolve_memory_plan_caps_gpu_single_batch_workers(monkeypatch):
+    monkeypatch.setattr("roop.memory.provider_uses_gpu", lambda: True)
+    monkeypatch.setattr(
+        roop.globals,
+        "CFG",
+        SimpleNamespace(
+            detect_pack_frame_count=256,
+            staged_chunk_size=128,
+            prefetch_frames=48,
+            swap_batch_size=8,
+            mask_batch_size=8,
+            enhance_batch_size=8,
+            single_batch_workers=2,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr("roop.memory.get_available_ram_gb", lambda: 24.0)
+    monkeypatch.setattr("roop.memory.get_available_vram_gb", lambda: 10.0)
+
+    plan = resolve_memory_plan(1920, 1080)
+
+    assert plan["single_batch_workers"] == 1
+    assert plan["requested_single_batch_workers"] == 2
+    assert plan["single_batch_workers_reason"] == "GPU-safe cap"
+    assert "single-batch workers=1 (requested 2, GPU-safe cap)" in describe_memory_plan(plan)
+
+
+def test_resolve_single_batch_workers_keeps_cpu_parallelism(monkeypatch):
+    monkeypatch.setattr("roop.memory.provider_uses_gpu", lambda: False)
+
+    effective_workers, requested_workers, reason = resolve_single_batch_workers(4)
+
+    assert effective_workers == 4
+    assert requested_workers == 4
+    assert reason is None
