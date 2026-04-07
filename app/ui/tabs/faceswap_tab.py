@@ -88,7 +88,7 @@ def normalize_resume_path(raw_path):
     return os.path.normpath(clean_path)
 
 
-def normalize_source_path(raw_path):
+def normalize_source_path(raw_path, warn=True):
     if raw_path is None:
         return None
     clean_path = raw_path.strip().strip('"').strip("'")
@@ -98,13 +98,16 @@ def normalize_source_path(raw_path):
         clean_path = os.path.abspath(os.path.join(os.getcwd(), clean_path))
     clean_path = os.path.normpath(clean_path)
     if not os.path.exists(clean_path):
-        gr.Warning(f"Source path not found: {clean_path}")
+        if warn:
+            gr.Warning(f"Source path not found: {clean_path}")
         return None
     if os.path.isdir(clean_path):
-        gr.Warning(f"Directories are not supported for sources: {clean_path}")
+        if warn:
+            gr.Warning(f"Directories are not supported for sources: {clean_path}")
         return None
     if not (util.has_image_extension(clean_path) or clean_path.lower().endswith('fsz')):
-        gr.Warning(f"Unsupported source file: {clean_path}")
+        if warn:
+            gr.Warning(f"Unsupported source file: {clean_path}")
         return None
     return clean_path
 
@@ -180,11 +183,42 @@ def build_resume_payload(settings):
     return payload
 
 
+def get_resume_source_assets_root(resume_path):
+    return os.path.join(os.path.splitext(resume_path)[0] + "_assets", "sources")
+
+
+def snapshot_resume_source_files(payload, resume_path):
+    source_refs = payload.get("sources") or []
+    if len(source_refs) < 1:
+        return payload
+    assets_root = get_resume_source_assets_root(resume_path)
+    os.makedirs(assets_root, exist_ok=True)
+    copied_paths = {}
+    for index, source_ref in enumerate(source_refs):
+        source_path = normalize_source_path(source_ref.get("path"), warn=False)
+        if source_path is None:
+            source_ref.pop("resume_cached_path", None)
+            continue
+        cache_key = os.path.normcase(os.path.normpath(source_path))
+        cached_path = copied_paths.get(cache_key)
+        if cached_path is None:
+            stem, ext = os.path.splitext(os.path.basename(source_path))
+            safe_name = safe_filename_token(stem)
+            filename = f"{index:03d}_{safe_name}{ext.lower()}"
+            cached_path = os.path.join(assets_root, filename)
+            if os.path.normcase(os.path.normpath(source_path)) != os.path.normcase(os.path.normpath(cached_path)):
+                shutil.copy2(source_path, cached_path)
+            copied_paths[cache_key] = cached_path
+        source_ref["resume_cached_path"] = cached_path
+    return payload
+
+
 def write_resume_payload(payload):
     first_target = os.path.basename(list_files_process[0].filename) if list_files_process else "faceswap"
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_{safe_filename_token(os.path.splitext(first_target)[0])}.json"
     resume_path = os.path.join(get_resume_cache_root(), filename)
+    payload = snapshot_resume_source_files(payload, resume_path)
     with open(resume_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, ensure_ascii=True)
     ui.globals.ui_resume_last_path = resume_path
@@ -292,7 +326,17 @@ def append_image_source(source_path, source_ref):
 def restore_input_faces_from_resume(source_refs):
     clear_input_face_state()
     for source_ref in source_refs:
-        source_path = normalize_source_path(source_ref.get("path"))
+        source_path = normalize_source_path(source_ref.get("path"), warn=False)
+        if source_path is None:
+            source_path = normalize_source_path(source_ref.get("resume_cached_path"), warn=False)
+        if source_path is None:
+            original_path = source_ref.get("path")
+            if original_path:
+                normalize_source_path(original_path, warn=True)
+            cached_path = source_ref.get("resume_cached_path")
+            if cached_path:
+                gr.Warning(f"Resume source snapshot not found: {os.path.normpath(cached_path)}")
+            continue
         if source_path is None:
             continue
         restored_ref = dict(source_ref)

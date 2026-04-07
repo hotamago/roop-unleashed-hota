@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import roop.globals
@@ -48,3 +49,52 @@ def test_write_and_read_resume_payload_roundtrip(tmp_path, monkeypatch):
     assert resume_path.endswith(".json")
     assert reloaded["version"] == faceswap_tab.RESUME_CACHE_VERSION
     assert reloaded["targets"]["files"][0]["filename"].endswith("target.mp4")
+
+
+def test_write_resume_payload_snapshots_source_files_into_resume_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(faceswap_tab, "get_resume_cache_root", lambda: str(tmp_path))
+    monkeypatch.setattr(faceswap_tab, "list_resume_cache_files", lambda: [], raising=False)
+    source_path = tmp_path / "gradio" / "source.png"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(b"source-image")
+    source_face_set = FaceSet()
+    source_face_set.faces.append(make_face())
+    roop.globals.INPUT_FACESETS.append(source_face_set)
+    ui.globals.ui_input_face_refs.append({"type": "image_face", "path": str(source_path), "face_index": 0})
+    faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
+
+    payload = faceswap_tab.build_resume_payload({"output_method": "File"})
+    resume_path = faceswap_tab.write_resume_payload(payload)
+    reloaded = faceswap_tab.read_resume_payload(resume_path)
+
+    cached_path = reloaded["sources"][0]["resume_cached_path"]
+    assert cached_path.startswith(str(tmp_path))
+    assert Path(cached_path).read_bytes() == b"source-image"
+
+
+def test_restore_input_faces_from_resume_uses_cached_snapshot_when_original_path_is_missing(tmp_path, monkeypatch):
+    cached_source = tmp_path / "resume_cache" / "cached-source.png"
+    cached_source.parent.mkdir(parents=True, exist_ok=True)
+    cached_source.write_bytes(b"cached-image")
+    restored_paths = []
+
+    def fake_append_image_source(source_path, source_ref):
+        restored_paths.append(source_path)
+        face_set = FaceSet()
+        face_set.faces.append(make_face(source_ref.get("mask_offsets")))
+        roop.globals.INPUT_FACESETS.append(face_set)
+        ui.globals.ui_input_face_refs.append(dict(source_ref))
+
+    monkeypatch.setattr(faceswap_tab, "append_image_source", fake_append_image_source)
+
+    faceswap_tab.restore_input_faces_from_resume([
+        {
+            "type": "image_face",
+            "path": str(tmp_path / "missing" / "source.png"),
+            "resume_cached_path": str(cached_source),
+            "face_index": 0,
+            "mask_offsets": list(faceswap_tab.default_mask_offsets()),
+        }
+    ])
+
+    assert restored_paths == [str(cached_source)]
