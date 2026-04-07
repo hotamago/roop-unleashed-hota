@@ -788,6 +788,7 @@ class StagedBatchExecutor:
 
                 frame_lookup = {frame_meta["frame_number"]: frame_meta for frame_meta in pack_data["frames"]}
                 task_batch = []
+                pack_cache_dirty = False
                 for frame_number, frame in iter_video_chunk(entry.filename, pack_data["frames"][0]["frame_number"], pack_data["frames"][-1]["frame_number"] + 1, memory_plan["prefetch_frames"]):
                     frame_meta = frame_lookup.get(frame_number, {"tasks": []})
                     for task_meta in frame_meta["tasks"]:
@@ -802,7 +803,7 @@ class StagedBatchExecutor:
                             batch_outputs = swap_mgr.run_swap_tasks_batch(task_batch, processor, memory_plan["swap_batch_size"])
                             for cache_key, fake_frame in batch_outputs.items():
                                 pack_cache[cache_key] = normalize_cache_image(fake_frame)
-                            self.write_stage_cache_map(pack_cache_path, pack_cache)
+                            pack_cache_dirty = True
                             processed_tasks += len(task_batch)
                             self.update_progress("swap", detail="Streaming source decode + batched face swap", step_completed=processed_tasks, step_total=task_count, step_unit="faces")
                             task_batch.clear()
@@ -810,9 +811,11 @@ class StagedBatchExecutor:
                     batch_outputs = swap_mgr.run_swap_tasks_batch(task_batch, processor, memory_plan["swap_batch_size"])
                     for cache_key, fake_frame in batch_outputs.items():
                         pack_cache[cache_key] = normalize_cache_image(fake_frame)
-                    self.write_stage_cache_map(pack_cache_path, pack_cache)
+                    pack_cache_dirty = True
                     processed_tasks += len(task_batch)
                     self.update_progress("swap", detail="Streaming source decode + batched face swap", step_completed=processed_tasks, step_total=task_count, step_unit="faces")
+                if pack_cache_dirty:
+                    self.write_stage_cache_map(pack_cache_path, pack_cache)
         finally:
             swap_mgr.release_resources()
         stages["swap"] = True
@@ -854,6 +857,7 @@ class StagedBatchExecutor:
                 frame_lookup = {frame_meta["frame_number"]: frame_meta for frame_meta in pack_data["frames"]}
                 task_batch = []
                 original_batch = []
+                pack_cache_dirty = False
                 for frame_number, frame in iter_video_chunk(entry.filename, pack_data["frames"][0]["frame_number"], pack_data["frames"][-1]["frame_number"] + 1, memory_plan["prefetch_frames"]):
                     frame_meta = frame_lookup.get(frame_number, {"tasks": []})
                     for task_meta in frame_meta["tasks"]:
@@ -864,20 +868,24 @@ class StagedBatchExecutor:
                         task_batch.append(dict(task_meta))
                         original_batch.append(mask_mgr.rebuild_aligned_frame(frame, task_meta))
                         if len(task_batch) >= task_batch_size:
-                            self.process_full_mask_batch(task_batch, original_batch, input_cache, pack_cache, pack_cache_path, mask_mgr, processor, processed_tasks, task_count, memory_plan)
+                            self.process_full_mask_batch(task_batch, original_batch, input_cache, pack_cache, pack_cache_path, mask_mgr, processor, processed_tasks, task_count, memory_plan, flush_cache=False)
+                            pack_cache_dirty = True
                             processed_tasks += len(task_batch)
                             task_batch.clear()
                             original_batch.clear()
                 if task_batch:
-                    self.process_full_mask_batch(task_batch, original_batch, input_cache, pack_cache, pack_cache_path, mask_mgr, processor, processed_tasks, task_count, memory_plan)
+                    self.process_full_mask_batch(task_batch, original_batch, input_cache, pack_cache, pack_cache_path, mask_mgr, processor, processed_tasks, task_count, memory_plan, flush_cache=False)
+                    pack_cache_dirty = True
                     processed_tasks += len(task_batch)
+                if pack_cache_dirty:
+                    self.write_stage_cache_map(pack_cache_path, pack_cache)
         finally:
             mask_mgr.release_resources()
         stages["mask"] = True
         write_json(mask_dir.parent / "manifest.json", manifest)
 
 
-    def process_full_mask_batch(self, task_batch, original_batch, input_cache, output_cache, output_cache_path, mask_mgr, processor, processed_tasks, task_count, memory_plan):
+    def process_full_mask_batch(self, task_batch, original_batch, input_cache, output_cache, output_cache_path, mask_mgr, processor, processed_tasks, task_count, memory_plan, flush_cache=True):
         if getattr(processor, "supports_batch", False):
             masks = processor.RunBatch(original_batch, self.options.masking_text, memory_plan["mask_batch_size"])
             for task_meta, original, mask in zip(task_batch, original_batch, masks):
@@ -894,7 +902,8 @@ class StagedBatchExecutor:
                 current_frame = input_cache[task_meta["cache_key"]]
                 result = mask_mgr.run_mask_task(task, current_frame, processor)
                 output_cache[task_meta["cache_key"]] = normalize_cache_image(result)
-        self.write_stage_cache_map(output_cache_path, output_cache)
+        if flush_cache:
+            self.write_stage_cache_map(output_cache_path, output_cache)
         self.update_progress("mask", detail="Streaming source decode + mask stage", step_completed=processed_tasks + len(task_batch), step_total=task_count, step_unit="faces")
 
 
@@ -930,6 +939,7 @@ class StagedBatchExecutor:
                     self.update_progress("enhance", detail="Reusing packed enhance cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces")
                     continue
                 task_batch = []
+                pack_cache_dirty = False
                 for _, task_meta in pack_tasks:
                     if task_meta["cache_key"] in pack_cache:
                         processed_tasks += 1
@@ -937,24 +947,29 @@ class StagedBatchExecutor:
                         continue
                     task_batch.append(dict(task_meta))
                     if len(task_batch) >= task_batch_size:
-                        self.process_full_enhance_batch(task_batch, input_cache, pack_cache, pack_cache_path, enhance_mgr, processor, processed_tasks, task_count, memory_plan)
+                        self.process_full_enhance_batch(task_batch, input_cache, pack_cache, pack_cache_path, enhance_mgr, processor, processed_tasks, task_count, memory_plan, flush_cache=False)
+                        pack_cache_dirty = True
                         processed_tasks += len(task_batch)
                         task_batch.clear()
                 if task_batch:
-                    self.process_full_enhance_batch(task_batch, input_cache, pack_cache, pack_cache_path, enhance_mgr, processor, processed_tasks, task_count, memory_plan)
+                    self.process_full_enhance_batch(task_batch, input_cache, pack_cache, pack_cache_path, enhance_mgr, processor, processed_tasks, task_count, memory_plan, flush_cache=False)
+                    pack_cache_dirty = True
                     processed_tasks += len(task_batch)
+                if pack_cache_dirty:
+                    self.write_stage_cache_map(pack_cache_path, pack_cache)
         finally:
             enhance_mgr.release_resources()
         stages["enhance"] = True
         write_json(enhance_dir.parent / "manifest.json", manifest)
 
 
-    def process_full_enhance_batch(self, task_batch, input_cache, output_cache, output_cache_path, enhance_mgr, processor, processed_tasks, task_count, memory_plan):
+    def process_full_enhance_batch(self, task_batch, input_cache, output_cache, output_cache_path, enhance_mgr, processor, processed_tasks, task_count, memory_plan, flush_cache=True):
         current_frames = [input_cache[task_meta["cache_key"]] for task_meta in task_batch]
         enhanced_frames = enhance_mgr.run_enhance_tasks_batch(task_batch, current_frames, processor, memory_plan["enhance_batch_size"])
         for task_meta in task_batch:
             output_cache[task_meta["cache_key"]] = normalize_cache_image(enhanced_frames[task_meta["cache_key"]])
-        self.write_stage_cache_map(output_cache_path, output_cache)
+        if flush_cache:
+            self.write_stage_cache_map(output_cache_path, output_cache)
         self.update_progress("enhance", detail="Running enhancement stage", step_completed=processed_tasks + len(task_batch), step_total=task_count, step_unit="faces")
 
 
@@ -1142,6 +1157,7 @@ class StagedBatchExecutor:
         processed_tasks = 0
         task_batch = []
         task_batch_size = self.get_swap_task_batch_size(memory_plan)
+        cache_dirty = False
         try:
             for _, frame, frame_meta in self.iter_chunk_source_frames_with_meta(chunk_meta, memory_plan, video_path=video_path, source_image=source_image):
                 for task_meta in frame_meta["tasks"]:
@@ -1156,7 +1172,7 @@ class StagedBatchExecutor:
                         batch_outputs = swap_mgr.run_swap_tasks_batch(task_batch, processor, memory_plan["swap_batch_size"])
                         for cache_key, fake_frame in batch_outputs.items():
                             swap_cache[cache_key] = normalize_cache_image(fake_frame)
-                        self.write_stage_cache_map(cache_path, swap_cache)
+                        cache_dirty = True
                         processed_tasks += len(task_batch)
                         self.update_progress("swap", detail="Streaming source decode + batched face swap", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
                         task_batch.clear()
@@ -1164,9 +1180,11 @@ class StagedBatchExecutor:
                 batch_outputs = swap_mgr.run_swap_tasks_batch(task_batch, processor, memory_plan["swap_batch_size"])
                 for cache_key, fake_frame in batch_outputs.items():
                     swap_cache[cache_key] = normalize_cache_image(fake_frame)
-                self.write_stage_cache_map(cache_path, swap_cache)
+                cache_dirty = True
                 processed_tasks += len(task_batch)
                 self.update_progress("swap", detail="Streaming source decode + batched face swap", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
+            if cache_dirty:
+                self.write_stage_cache_map(cache_path, swap_cache)
         finally:
             swap_mgr.release_resources()
         chunk_state["stages"]["swap"] = True
@@ -1195,6 +1213,7 @@ class StagedBatchExecutor:
         task_batch = []
         original_batch = []
         task_batch_size = max(1, min(128, memory_plan["mask_batch_size"]))
+        cache_dirty = False
         try:
             for _, frame, frame_meta in self.iter_chunk_source_frames_with_meta(chunk_meta, memory_plan, video_path=video_path, source_image=source_image):
                 for task_meta in frame_meta["tasks"]:
@@ -1205,13 +1224,17 @@ class StagedBatchExecutor:
                     task_batch.append(dict(task_meta))
                     original_batch.append(mask_mgr.rebuild_aligned_frame(frame, task_meta))
                     if len(task_batch) >= task_batch_size:
-                        self.process_full_mask_batch(task_batch, original_batch, input_cache, mask_cache, cache_path, mask_mgr, processor, processed_tasks, total_tasks, memory_plan)
+                        self.process_full_mask_batch(task_batch, original_batch, input_cache, mask_cache, cache_path, mask_mgr, processor, processed_tasks, total_tasks, memory_plan, flush_cache=False)
+                        cache_dirty = True
                         processed_tasks += len(task_batch)
                         task_batch.clear()
                         original_batch.clear()
             if task_batch:
-                self.process_full_mask_batch(task_batch, original_batch, input_cache, mask_cache, cache_path, mask_mgr, processor, processed_tasks, total_tasks, memory_plan)
+                self.process_full_mask_batch(task_batch, original_batch, input_cache, mask_cache, cache_path, mask_mgr, processor, processed_tasks, total_tasks, memory_plan, flush_cache=False)
+                cache_dirty = True
                 processed_tasks += len(task_batch)
+            if cache_dirty:
+                self.write_stage_cache_map(cache_path, mask_cache)
         finally:
             mask_mgr.release_resources()
         chunk_state["stages"]["mask"] = True
@@ -1238,6 +1261,7 @@ class StagedBatchExecutor:
         processor = enhance_mgr.processors[0]
         processed_tasks = 0
         task_batch_size = self.get_enhance_task_batch_size(memory_plan)
+        cache_dirty = False
         for batch in chunked(flat_tasks, task_batch_size):
             pending = [(frame_meta, task_meta) for frame_meta, task_meta in batch if task_meta["cache_key"] not in enhance_cache]
             if not pending:
@@ -1249,9 +1273,11 @@ class StagedBatchExecutor:
             enhanced_frames = enhance_mgr.run_enhance_tasks_batch(task_batch, current_frames, processor, memory_plan["enhance_batch_size"])
             for task_meta in task_batch:
                 enhance_cache[task_meta["cache_key"]] = normalize_cache_image(enhanced_frames[task_meta["cache_key"]])
-            self.write_stage_cache_map(cache_path, enhance_cache)
+            cache_dirty = True
             processed_tasks += len(batch)
             self.update_progress("enhance", detail="Running enhancement stage", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
+        if cache_dirty:
+            self.write_stage_cache_map(cache_path, enhance_cache)
         enhance_mgr.release_resources()
         chunk_state["stages"]["enhance"] = True
 

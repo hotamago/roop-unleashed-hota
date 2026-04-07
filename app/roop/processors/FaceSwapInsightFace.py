@@ -12,6 +12,7 @@ from roop.utilities import resolve_relative_path
 class FaceSwapInsightFace():
     plugin_options:dict = None
     model_swap_insightface = None
+    source_latent_cache = None
 
     processorname = 'faceswap'
     type = 'swap'
@@ -39,6 +40,7 @@ class FaceSwapInsightFace():
             self.model_swap_insightface = onnxruntime.InferenceSession(model_path, sess_options, providers=roop.globals.execution_providers)
             self.batch_size_limit = self._resolve_batch_size_limit()
             self.supports_batch = self.batch_size_limit is None or self.batch_size_limit > 1
+        self.source_latent_cache = {}
 
 
     def _resolve_batch_size_limit(self):
@@ -68,11 +70,23 @@ class FaceSwapInsightFace():
         return worker
 
 
-
-    def Run(self, source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
-        latent = source_face.normed_embedding.reshape((1,-1))
+    def _project_source_latent(self, source_face: Face):
+        if self.source_latent_cache is None:
+            self.source_latent_cache = {}
+        cache_key = id(source_face)
+        cached_latent = self.source_latent_cache.get(cache_key)
+        if cached_latent is not None:
+            return cached_latent
+        latent = np.asarray(source_face.normed_embedding, dtype=np.float32).reshape((1, -1))
         latent = np.dot(latent, self.emap)
         latent /= np.linalg.norm(latent)
+        latent = latent.astype(np.float32, copy=False)
+        self.source_latent_cache[cache_key] = latent
+        return latent
+
+
+    def Run(self, source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
+        latent = self._project_source_latent(source_face)
         io_binding = self.model_swap_insightface.io_binding()           
         io_binding.bind_cpu_input("target", temp_frame)
         io_binding.bind_cpu_input("source", latent)
@@ -90,10 +104,7 @@ class FaceSwapInsightFace():
             batch_frames = np.concatenate(temp_frames[batch_start:batch_end], axis=0).astype(np.float32)
             latents = []
             for source_face in source_faces[batch_start:batch_end]:
-                latent = source_face.normed_embedding.reshape((1, -1))
-                latent = np.dot(latent, self.emap)
-                latent /= np.linalg.norm(latent)
-                latents.append(latent.astype(np.float32))
+                latents.append(self._project_source_latent(source_face))
             batch_latents = np.concatenate(latents, axis=0)
             try:
                 batch_outputs = self.model_swap_insightface.run(None, {"target": batch_frames, "source": batch_latents})[0]
@@ -111,6 +122,7 @@ class FaceSwapInsightFace():
     def Release(self):
         del self.model_swap_insightface
         self.model_swap_insightface = None
+        self.source_latent_cache = None
 
 
                 

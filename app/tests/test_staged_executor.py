@@ -42,6 +42,66 @@ def test_stage_cache_roundtrip_uses_binary_blob(tmp_path):
     assert np.array_equal(loaded["face_b"], images["face_b"])
 
 
+def test_ensure_enhance_stage_flushes_cache_once_per_chunk(tmp_path, monkeypatch):
+    executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}, "gfpgan": {}}))
+    chunk_dir = tmp_path / "chunk"
+    chunk_meta = {
+        "start": 0,
+        "end": 2,
+        "frames": [
+            {"frame_number": 0, "tasks": [{"cache_key": "face_a"}]},
+            {"frame_number": 1, "tasks": [{"cache_key": "face_b"}]},
+        ],
+    }
+    chunk_state = {"stages": {"enhance": False}}
+    memory_plan = {"enhance_batch_size": 1, "single_batch_workers": 1}
+    input_cache = {
+        "face_a": np.full((2, 2, 3), 7, dtype=np.uint8),
+        "face_b": np.full((2, 2, 3), 9, dtype=np.uint8),
+    }
+    swap_cache_path = executor.get_stage_cache_path(chunk_dir / "swap")
+    enhance_cache_path = executor.get_stage_cache_path(chunk_dir / "enhance")
+    write_calls = []
+
+    class FakeProcessMgr:
+        def __init__(self, _progress):
+            self.processors = [object()]
+
+        def initialize(self, *_args, **_kwargs):
+            return None
+
+        def run_enhance_tasks_batch(self, task_batch, current_frames, _processor, _batch_size):
+            return {
+                task_meta["cache_key"]: normalize_cache_image(current_frame + 1)
+                for task_meta, current_frame in zip(task_batch, current_frames)
+            }
+
+        def release_resources(self):
+            return None
+
+    def fake_read_stage_cache_map(path):
+        if path == swap_cache_path:
+            return dict(input_cache)
+        if path == enhance_cache_path:
+            return {}
+        raise AssertionError(path)
+
+    def fake_write_stage_cache_map(path, cache_map):
+        assert path == enhance_cache_path
+        write_calls.append(dict(cache_map))
+
+    monkeypatch.setattr("roop.staged_executor.ProcessMgr", FakeProcessMgr)
+    monkeypatch.setattr(executor, "read_stage_cache_map", fake_read_stage_cache_map)
+    monkeypatch.setattr(executor, "write_stage_cache_map", fake_write_stage_cache_map)
+    monkeypatch.setattr(executor, "update_progress", lambda *args, **kwargs: None)
+
+    executor.ensure_enhance_stage(chunk_dir, chunk_meta, chunk_state, memory_plan)
+
+    assert chunk_state["stages"]["enhance"] is True
+    assert len(write_calls) == 1
+    assert set(write_calls[0].keys()) == {"face_a", "face_b"}
+
+
 def test_pipeline_steps_and_detect_pack_ranges_follow_current_config(monkeypatch):
     monkeypatch.setattr(roop.globals.CFG, "detect_pack_frame_count", 32, raising=False)
     executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}, "mask_xseg": {}, "gfpgan": {}}))
