@@ -275,7 +275,7 @@ def batch_process_regular(output_method, files:list[ProcessEntry], masking_engin
         return
 
     executor = StagedBatchExecutor(output_method, progress, options)
-    detail = "Streaming decode + staged model passes" if output_method == "File" else "Chunked processing with resume cache"
+    detail = "Packed detect cache + streaming aligned rebuild" if output_method == "File" else "Chunked packed cache + streaming aligned rebuild"
     set_processing_message("Running smart staged flow", stage="prepare", detail=detail, force_log=True)
     executor.run(files)
     if roop.globals.processing:

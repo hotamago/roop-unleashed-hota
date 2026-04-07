@@ -169,12 +169,12 @@ class ProcessMgr():
             if value is None:
                 continue
             if isinstance(value, np.ndarray):
-                data[key] = value.tolist()
+                data[key] = value.astype(np.float32, copy=False)
             else:
-                data[key] = value
+                data[key] = np.asarray(value, dtype=np.float32)
         matrix = getattr(face, "matrix", None)
         if matrix is not None:
-            data["matrix"] = matrix.tolist() if isinstance(matrix, np.ndarray) else matrix
+            data["matrix"] = matrix.astype(np.float32, copy=False) if isinstance(matrix, np.ndarray) else np.asarray(matrix, dtype=np.float32)
         if hasattr(face, "sex"):
             data["sex"] = face.sex
         return data
@@ -314,6 +314,23 @@ class ProcessMgr():
             fallback_required = True
             tasks = []
         return {"tasks": tasks, "fallback": fallback_required}
+
+
+    def rebuild_aligned_frame(self, frame: Frame, task):
+        target_face = self.deserialize_face(task["target_face"])
+        working_frame = frame
+        rotation_action = task.get("rotation_action")
+        cutout_box = task.get("cutout_box")
+        if rotation_action is not None and cutout_box is not None:
+            cutout_frame, _, _, _, _ = self.cutout(frame, cutout_box[0], cutout_box[1], cutout_box[2], cutout_box[3])
+            if rotation_action == "rotate_anticlockwise":
+                working_frame = rotate_anticlockwise(cutout_frame)
+            elif rotation_action == "rotate_clockwise":
+                working_frame = rotate_clockwise(cutout_frame)
+            else:
+                working_frame = cutout_frame
+        aligned_img, _ = align_crop(working_frame, target_face.kps, self.options.subsample_size)
+        return aligned_img
 
 
     def run_swap_task(self, task, processor, batch_size: int = 1):
