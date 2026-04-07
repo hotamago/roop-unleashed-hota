@@ -7,6 +7,7 @@ from roop.ProcessEntry import ProcessEntry
 from roop.ProcessOptions import ProcessOptions
 from roop.staged_executor import (
     StagedBatchExecutor,
+    get_entry_job_key,
     get_entry_signature,
     normalize_cache_image,
 )
@@ -206,7 +207,7 @@ def test_pipeline_steps_and_detect_pack_ranges_follow_current_config(monkeypatch
     assert list(executor.iter_detect_pack_ranges(70)) == [(1, 32), (33, 64), (65, 70)]
 
 
-def test_entry_signature_changes_when_cache_shaping_config_changes(tmp_path, monkeypatch):
+def test_entry_signature_ignores_cache_shaping_config_changes(tmp_path, monkeypatch):
     media_path = tmp_path / "clip.mp4"
     media_path.write_bytes(b"test-video")
     entry = ProcessEntry(str(media_path), 0, 10, 30.0)
@@ -223,8 +224,8 @@ def test_entry_signature_changes_when_cache_shaping_config_changes(tmp_path, mon
     monkeypatch.setattr(roop.globals.CFG, "staged_chunk_size", 96, raising=False)
     sig_c = get_entry_signature(entry, options, "File")
 
-    assert sig_a != sig_b
-    assert sig_a != sig_c
+    assert sig_a == sig_b
+    assert sig_a == sig_c
 
 
 def test_entry_signature_uses_effective_single_batch_workers(tmp_path, monkeypatch):
@@ -279,6 +280,45 @@ def test_entry_signature_uses_active_resume_key_instead_of_runtime_face_embeddin
     sig_b = get_entry_signature(entry, options, "File")
 
     assert sig_a == sig_b
+
+
+def test_entry_job_key_uses_active_resume_job_key_when_available(tmp_path, monkeypatch):
+    media_path = tmp_path / "clip.mp4"
+    media_path.write_bytes(b"same-video")
+    options = make_options({"faceswap": {}})
+    entry = ProcessEntry(str(media_path), 0, 10, 30.0, file_signature="sha256:same-video")
+    monkeypatch.setattr(roop.globals, "active_resume_job_key", "resume-job-123", raising=False)
+
+    job_key_a = get_entry_job_key(entry, options)
+
+    monkeypatch.setattr(roop.globals, "active_resume_job_key", "resume-job-123", raising=False)
+    monkeypatch.setattr(roop.globals, "active_resume_key", "resume-snapshot-b", raising=False)
+    monkeypatch.setattr(roop.globals.CFG, "detect_pack_frame_count", 1024, raising=False)
+    job_key_b = get_entry_job_key(entry, options)
+
+    assert job_key_a == job_key_b
+
+
+def test_prepare_job_reuses_stable_resume_job_dir_when_signature_changes(tmp_path, monkeypatch):
+    media_path = tmp_path / "clip.mp4"
+    media_path.write_bytes(b"same-video")
+    entry = ProcessEntry(str(media_path), 0, 10, 30.0, file_signature="sha256:same-video")
+    executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
+    executor.jobs_root = tmp_path / "jobs"
+    memory_plan = {"chunk_size": 96}
+
+    monkeypatch.setattr(roop.globals, "active_resume_job_key", "resume-job-123", raising=False)
+    monkeypatch.setattr(roop.globals, "active_resume_key", "resume-snapshot-a", raising=False)
+    job_dir_a, _manifest_a = executor.prepare_job(entry, memory_plan)
+    stale_marker = job_dir_a / "stale.bin"
+    stale_marker.write_bytes(b"old-cache")
+
+    monkeypatch.setattr(roop.globals, "active_resume_key", "resume-snapshot-b", raising=False)
+    job_dir_b, manifest_b = executor.prepare_job(entry, memory_plan)
+
+    assert job_dir_a == job_dir_b
+    assert not stale_marker.exists()
+    assert manifest_b["status"] == "running"
 
 
 def test_cleanup_job_dir_preserves_processing_cache_for_resume(tmp_path, monkeypatch):

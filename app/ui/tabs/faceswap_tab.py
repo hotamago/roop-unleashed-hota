@@ -264,6 +264,7 @@ def get_resume_payload_identity(payload):
     canonical = copy.deepcopy(payload)
     canonical.pop("created_at", None)
     canonical.pop("resume_key", None)
+    canonical.pop("resume_job_key", None)
     canonical.pop("__path__", None)
     for source_ref in canonical.get("sources") or []:
         source_ref["path"] = get_source_file_signature(source_ref) or source_ref.get("path")
@@ -282,8 +283,20 @@ def get_resume_payload_identity(payload):
     return canonical
 
 
+def get_resume_job_identity(payload):
+    canonical = get_resume_payload_identity(payload)
+    canonical.pop("settings", None)
+    return canonical
+
+
 def get_resume_payload_signature(payload):
     canonical = get_resume_payload_identity(payload)
+    serialized = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def get_resume_job_signature(payload):
+    canonical = get_resume_job_identity(payload)
     serialized = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
@@ -426,6 +439,7 @@ def write_resume_payload_with_result(payload):
     desired_resume_path, resume_key = get_resume_payload_path(payload)
     resume_path = resolve_equivalent_resume_path(payload, desired_resume_path)
     payload["resume_key"] = resume_key
+    payload["resume_job_key"] = get_resume_job_signature(payload)
     payload = snapshot_resume_source_files(payload, resume_path)
     payload = snapshot_resume_target_files(payload, resume_path)
     reused_existing = os.path.isfile(resume_path)
@@ -633,6 +647,7 @@ def load_resume_into_runtime(resume_path):
 
     payload = read_resume_payload(resume_path)
     roop.globals.active_resume_key = payload.get("resume_key") or get_resume_payload_signature(payload)
+    roop.globals.active_resume_job_key = payload.get("resume_job_key") or get_resume_job_signature(payload)
     restore_input_faces_from_resume(payload.get("sources") or [])
     target_paths = restore_process_entries((payload.get("targets") or {}).get("files") or [])
     restore_target_faces_from_resume((payload.get("targets") or {}).get("selected_faces") or [])
@@ -1452,8 +1467,10 @@ def save_resume_snapshot_for_run(output_method, enhancer, detection, keep_frames
         restore_original_mouth, num_swap_steps, upsample
     )
     payload = build_resume_payload(settings)
+    resume_job_key = get_resume_job_signature(payload)
     resume_path, reused_existing, resume_key = write_resume_payload_with_result(payload)
     roop.globals.active_resume_key = resume_key
+    roop.globals.active_resume_job_key = resume_job_key
     status_detail = "Reused existing resume config for this run" if reused_existing else "Saved resume config for this run"
     return resume_path, get_resume_status_markdown(resume_path, status_detail), reused_existing
 
@@ -1513,6 +1530,7 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
             gr.Info(f"Resume config saved: {resume_path}")
     except Exception as exc:
         roop.globals.active_resume_key = None
+        roop.globals.active_resume_job_key = None
         resume_status = get_resume_status_markdown(ui.globals.ui_resume_last_path, f"Resume config was not saved: {exc}")
         gr.Warning(f"Resume config was not saved for this run: {exc}")
     yield gr.Button(variant="secondary", interactive=False), gr.Button(variant="primary", interactive=True), get_processing_status_markdown(), resume_status

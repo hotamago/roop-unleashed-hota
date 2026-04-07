@@ -117,38 +117,47 @@ PIPELINE_VERSION = 7
 DETECT_PACK_FRAME_COUNT = 256
 
 
-def get_entry_signature(entry, options, output_method):
+def get_entry_file_identity(entry):
     stat = os.stat(entry.filename)
-    effective_single_batch_workers, _, _ = resolve_single_batch_workers(getattr(roop.globals.CFG, "single_batch_workers", 1))
     file_signature = getattr(entry, "file_signature", None)
     if file_signature:
-        file_identity = {
+        return {
             "signature": file_signature,
             "size": stat.st_size,
             "start": entry.startframe,
             "end": entry.endframe,
         }
+    return {
+        "path": os.path.abspath(entry.filename),
+        "size": stat.st_size,
+        "mtime": int(stat.st_mtime),
+        "start": entry.startframe,
+        "end": entry.endframe,
+    }
+
+
+def get_entry_job_key(entry, options):
+    active_resume_job_key = getattr(roop.globals, "active_resume_job_key", None)
+    job_identity = {
+        "pipeline_version": PIPELINE_VERSION,
+        "file": get_entry_file_identity(entry),
+    }
+    if active_resume_job_key:
+        job_identity["resume_job_key"] = active_resume_job_key
     else:
-        file_identity = {
-            "path": os.path.abspath(entry.filename),
-            "size": stat.st_size,
-            "mtime": int(stat.st_mtime),
-            "start": entry.startframe,
-            "end": entry.endframe,
-        }
+        job_identity["inputs"] = hash_facesets(roop.globals.INPUT_FACESETS)
+        job_identity["targets"] = hash_target_faces(roop.globals.TARGET_FACES)
+        job_identity["selected_index"] = getattr(options, "selected_index", 0)
+    return hashlib.sha256(json_dumps(job_identity).encode("utf-8")).hexdigest()
+
+
+def get_entry_signature(entry, options, output_method):
+    file_identity = get_entry_file_identity(entry)
     active_resume_key = getattr(roop.globals, "active_resume_key", None)
     signature = {
         "pipeline_version": PIPELINE_VERSION,
         "file": file_identity,
-        "provider": str(roop.globals.execution_providers),
         "output_method": output_method,
-        "detect_pack_frame_count": getattr(roop.globals.CFG, "detect_pack_frame_count", DETECT_PACK_FRAME_COUNT),
-        "staged_chunk_size": getattr(roop.globals.CFG, "staged_chunk_size", 96),
-        "prefetch_frames": getattr(roop.globals.CFG, "prefetch_frames", 24),
-        "swap_batch_size": getattr(roop.globals.CFG, "swap_batch_size", 32),
-        "mask_batch_size": getattr(roop.globals.CFG, "mask_batch_size", 64),
-        "enhance_batch_size": getattr(roop.globals.CFG, "enhance_batch_size", 8),
-        "single_batch_workers": effective_single_batch_workers,
         "options": {
             "processors": list(options.processors.keys()),
             "face_distance_threshold": options.face_distance_threshold,
@@ -1069,15 +1078,30 @@ class StagedBatchExecutor:
 
 
     def prepare_job(self, entry, memory_plan):
-        job_hash = get_entry_signature(entry, self.options, self.output_method)
-        job_dir = self.jobs_root / job_hash
+        job_key = get_entry_job_key(entry, self.options)
+        cache_signature = get_entry_signature(entry, self.options, self.output_method)
+        job_dir = self.jobs_root / job_key
         job_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = job_dir / "manifest.json"
         if manifest_path.exists():
             manifest = read_json(manifest_path)
+            if manifest.get("pipeline_version") != PIPELINE_VERSION or manifest.get("cache_signature") != cache_signature:
+                shutil.rmtree(job_dir, ignore_errors=True)
+                job_dir.mkdir(parents=True, exist_ok=True)
+                manifest = {
+                    "job_key": job_key,
+                    "cache_signature": cache_signature,
+                    "pipeline_version": PIPELINE_VERSION,
+                    "status": "running",
+                    "memory_plan": memory_plan,
+                    "chunks": {},
+                    "stages": {},
+                }
+                write_json(manifest_path, manifest)
         else:
             manifest = {
-                "job_hash": job_hash,
+                "job_key": job_key,
+                "cache_signature": cache_signature,
                 "pipeline_version": PIPELINE_VERSION,
                 "status": "running",
                 "memory_plan": memory_plan,
@@ -1085,6 +1109,8 @@ class StagedBatchExecutor:
                 "stages": {},
             }
             write_json(manifest_path, manifest)
+        manifest["job_key"] = job_key
+        manifest["cache_signature"] = cache_signature
         manifest["memory_plan"] = memory_plan
         manifest["status"] = "running"
         return job_dir, manifest

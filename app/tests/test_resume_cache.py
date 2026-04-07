@@ -52,6 +52,22 @@ def test_write_and_read_resume_payload_roundtrip(tmp_path, monkeypatch):
     assert reloaded["targets"]["files"][0]["filename"].endswith("target.mp4")
 
 
+def test_resume_job_signature_ignores_settings_changes():
+    source_face_set = FaceSet()
+    source_face_set.faces.append(make_face())
+    roop.globals.INPUT_FACESETS.append(source_face_set)
+    roop.globals.TARGET_FACES.append(SimpleNamespace())
+    ui.globals.ui_input_face_refs.append({"type": "image_face", "path": "C:/source.png", "face_index": 0})
+    ui.globals.ui_target_face_refs.append({"path": "C:/target.mp4", "frame_number": 12, "face_index": 0})
+    faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
+
+    payload_a = faceswap_tab.build_resume_payload({"output_method": "File", "enhancer": "GFPGAN"})
+    payload_b = faceswap_tab.build_resume_payload({"output_method": "Virtual Camera", "enhancer": "CodeFormer"})
+
+    assert faceswap_tab.get_resume_payload_signature(payload_a) != faceswap_tab.get_resume_payload_signature(payload_b)
+    assert faceswap_tab.get_resume_job_signature(payload_a) == faceswap_tab.get_resume_job_signature(payload_b)
+
+
 def test_write_resume_payload_snapshots_source_files_into_resume_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(faceswap_tab, "get_resume_cache_root", lambda: str(tmp_path))
     monkeypatch.setattr(faceswap_tab, "list_resume_cache_files", lambda: [], raising=False)
