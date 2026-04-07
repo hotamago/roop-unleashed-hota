@@ -214,3 +214,38 @@ def test_write_resume_payload_refreshes_existing_resume_file_with_missing_target
 
     assert rewritten_path == resume_path
     assert reloaded["targets"]["files"][0]["resume_cached_path"].startswith(str(resume_root))
+
+
+def test_write_resume_payload_keeps_same_signature_path_between_temp_and_cached_target_paths(tmp_path, monkeypatch):
+    resume_root = tmp_path / "resume_cache"
+    gradio_root = tmp_path / "temp" / "gradio"
+    monkeypatch.setattr(faceswap_tab, "get_resume_cache_root", lambda: str(resume_root))
+    monkeypatch.setattr(faceswap_tab, "get_gradio_temp_root", lambda: gradio_root)
+    monkeypatch.setattr(faceswap_tab, "list_resume_cache_files", lambda: [], raising=False)
+    stable_source = tmp_path / "source.png"
+    stable_source.write_bytes(b"source-image")
+    source_face_set = FaceSet()
+    source_face_set.faces.append(make_face())
+    roop.globals.INPUT_FACESETS.append(source_face_set)
+    ui.globals.ui_input_face_refs.append({"type": "image_face", "path": str(stable_source), "face_index": 0})
+    target_temp = gradio_root / "upload" / "clip.mp4"
+    target_temp.parent.mkdir(parents=True, exist_ok=True)
+    target_temp.write_bytes(b"target-video")
+    roop.globals.TARGET_FACES.append(SimpleNamespace())
+    ui.globals.ui_target_face_refs.append({"path": str(target_temp), "frame_number": 12, "face_index": 0})
+    faceswap_tab.list_files_process[:] = [ProcessEntry(str(target_temp), 0, 100, 24.0)]
+
+    first_resume_path = faceswap_tab.write_resume_payload(faceswap_tab.build_resume_payload({"output_method": "File"}))
+    reloaded = faceswap_tab.read_resume_payload(first_resume_path)
+    cached_target_path = reloaded["targets"]["files"][0]["resume_cached_path"]
+
+    faceswap_tab.list_files_process[:] = [ProcessEntry(str(cached_target_path), 0, 100, 24.0)]
+    ui.globals.ui_target_face_refs[:] = [{
+        "path": str(cached_target_path),
+        "frame_number": 12,
+        "face_index": 0,
+    }]
+
+    second_resume_path = faceswap_tab.write_resume_payload(faceswap_tab.build_resume_payload({"output_method": "File"}))
+
+    assert first_resume_path == second_resume_path

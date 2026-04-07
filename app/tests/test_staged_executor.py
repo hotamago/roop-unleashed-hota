@@ -89,6 +89,25 @@ def test_entry_signature_uses_effective_single_batch_workers(tmp_path, monkeypat
     assert sig_a == sig_b
 
 
+def test_entry_signature_stays_stable_when_transient_target_moves_to_resume_cache(tmp_path):
+    temp_target = tmp_path / "temp" / "gradio" / "upload" / "clip.mp4"
+    temp_target.parent.mkdir(parents=True, exist_ok=True)
+    temp_target.write_bytes(b"same-video")
+    cached_target = tmp_path / "resume_cache" / "clip.mp4"
+    cached_target.parent.mkdir(parents=True, exist_ok=True)
+    cached_target.write_bytes(b"same-video")
+    options = make_options({"faceswap": {}})
+    entry_a = ProcessEntry(str(temp_target), 0, 10, 30.0)
+    entry_b = ProcessEntry(str(cached_target), 0, 10, 30.0)
+    entry_a.file_signature = "sha256:same-video"
+    entry_b.file_signature = "sha256:same-video"
+
+    sig_a = get_entry_signature(entry_a, options, "File")
+    sig_b = get_entry_signature(entry_b, options, "File")
+
+    assert sig_a == sig_b
+
+
 def test_cleanup_job_dir_preserves_processing_cache_for_resume(tmp_path, monkeypatch):
     executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
     job_dir = tmp_path / "job-cache"

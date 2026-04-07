@@ -38,6 +38,7 @@ current_video_fps = 50
 
 manual_masking = False
 RESUME_CACHE_VERSION = 1
+FILE_SIGNATURE_CACHE = {}
 
 
 def default_mask_offsets():
@@ -121,15 +122,82 @@ def safe_filename_token(name):
     return token[:80] or "resume"
 
 
+def hash_file_contents(path):
+    if path is None or not os.path.isfile(path):
+        return None
+    stat = os.stat(path)
+    cache_key = (os.path.normcase(os.path.normpath(os.path.abspath(path))), stat.st_size, int(stat.st_mtime_ns))
+    cached = FILE_SIGNATURE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    signature = f"sha256:{digest.hexdigest()}"
+    FILE_SIGNATURE_CACHE[cache_key] = signature
+    return signature
+
+
+def should_use_stable_file_signature(path):
+    if not path:
+        return False
+    candidate_roots = [os.environ.get("GRADIO_TEMP_DIR")]
+    try:
+        candidate_roots.append(str(get_gradio_temp_root()))
+    except Exception:
+        pass
+    try:
+        candidate_roots.append(get_resume_cache_root())
+    except Exception:
+        pass
+    return any(root and is_path_within_root(path, root) for root in candidate_roots)
+
+
+def get_stable_file_signature(path):
+    if path is None:
+        return None
+    normalized_path = os.path.normpath(os.path.abspath(path))
+    if not should_use_stable_file_signature(normalized_path):
+        return None
+    return hash_file_contents(normalized_path)
+
+
+def get_source_file_signature(source_ref):
+    signature = source_ref.get("file_signature")
+    if signature:
+        return signature
+    source_path = normalize_source_path(source_ref.get("path"), warn=False)
+    if source_path is None:
+        source_path = normalize_source_path(source_ref.get("resume_cached_path"), warn=False)
+    return get_stable_file_signature(source_path)
+
+
+def get_target_file_signature(target_ref, path_key):
+    signature = target_ref.get("file_signature")
+    if signature:
+        return signature
+    target_path = normalize_target_path(target_ref.get(path_key), warn=False)
+    if target_path is None:
+        target_path = normalize_target_path(target_ref.get("resume_cached_path"), warn=False)
+    return get_stable_file_signature(target_path)
+
+
 def serialize_process_entries(entries):
     payload = []
     for entry in entries:
-        payload.append({
+        entry_payload = {
             "filename": os.path.abspath(entry.filename),
             "startframe": int(entry.startframe),
             "endframe": int(entry.endframe),
             "fps": float(entry.fps or 0),
-        })
+            "display_name": getattr(entry, "display_name", os.path.basename(entry.filename)),
+        }
+        file_signature = getattr(entry, "file_signature", None) or get_stable_file_signature(entry.filename)
+        if file_signature:
+            entry.file_signature = file_signature
+            entry_payload["file_signature"] = file_signature
+        payload.append(entry_payload)
     return payload
 
 
@@ -146,6 +214,9 @@ def snapshot_input_face_refs():
             mask_offsets = list(getattr(face_set.faces[0], "mask_offsets", mask_offsets))
         base_ref["path"] = os.path.abspath(base_ref["path"])
         base_ref["mask_offsets"] = list(mask_offsets)
+        file_signature = get_source_file_signature(base_ref)
+        if file_signature:
+            base_ref["file_signature"] = file_signature
         refs.append(base_ref)
     return refs
 
@@ -161,6 +232,9 @@ def snapshot_target_face_refs():
         base_ref["path"] = os.path.abspath(base_ref["path"])
         base_ref["frame_number"] = int(base_ref.get("frame_number", 0) or 0)
         base_ref["face_index"] = int(base_ref.get("face_index", 0) or 0)
+        file_signature = get_target_file_signature(base_ref, "path")
+        if file_signature:
+            base_ref["file_signature"] = file_signature
         refs.append(base_ref)
     return refs
 
@@ -192,12 +266,19 @@ def get_resume_payload_identity(payload):
     canonical.pop("resume_key", None)
     canonical.pop("__path__", None)
     for source_ref in canonical.get("sources") or []:
+        source_ref["path"] = get_source_file_signature(source_ref) or source_ref.get("path")
         source_ref.pop("resume_cached_path", None)
+        source_ref.pop("file_signature", None)
     targets = canonical.get("targets") or {}
     for target_entry in targets.get("files") or []:
+        target_entry["filename"] = get_target_file_signature(target_entry, "filename") or target_entry.get("filename")
         target_entry.pop("resume_cached_path", None)
+        target_entry.pop("file_signature", None)
+        target_entry.pop("display_name", None)
     for target_face_ref in targets.get("selected_faces") or []:
+        target_face_ref["path"] = get_target_file_signature(target_face_ref, "path") or target_face_ref.get("path")
         target_face_ref.pop("resume_cached_path", None)
+        target_face_ref.pop("file_signature", None)
     return canonical
 
 
@@ -208,10 +289,27 @@ def get_resume_payload_signature(payload):
 
 
 def get_resume_payload_path(payload):
-    first_target = os.path.basename(list_files_process[0].filename) if list_files_process else "faceswap"
+    target_entries = (payload.get("targets") or {}).get("files") or []
+    first_target_entry = target_entries[0] if target_entries else {}
+    first_target = first_target_entry.get("display_name") or os.path.basename(first_target_entry.get("filename") or "faceswap")
     resume_key = get_resume_payload_signature(payload)
     filename = f"{safe_filename_token(os.path.splitext(first_target)[0])}_{resume_key[:12]}.json"
     return os.path.join(get_resume_cache_root(), filename), resume_key
+
+
+def resolve_equivalent_resume_path(payload, desired_resume_path):
+    active_resume_path = normalize_resume_path(ui.globals.ui_resume_last_path)
+    if active_resume_path is None or not os.path.isfile(active_resume_path):
+        return desired_resume_path
+    if os.path.normcase(os.path.normpath(active_resume_path)) == os.path.normcase(os.path.normpath(desired_resume_path)):
+        return desired_resume_path
+    try:
+        active_payload = read_resume_payload(active_resume_path)
+    except Exception:
+        return desired_resume_path
+    if get_resume_payload_signature(active_payload) == get_resume_payload_signature(payload):
+        return active_resume_path
+    return desired_resume_path
 
 
 def get_resume_source_assets_root(resume_path):
@@ -306,7 +404,8 @@ def snapshot_resume_target_files(payload, resume_path):
 
 def write_resume_payload_with_result(payload):
     payload = copy.deepcopy(payload)
-    resume_path, resume_key = get_resume_payload_path(payload)
+    desired_resume_path, resume_key = get_resume_payload_path(payload)
+    resume_path = resolve_equivalent_resume_path(payload, desired_resume_path)
     payload["resume_key"] = resume_key
     payload = snapshot_resume_source_files(payload, resume_path)
     payload = snapshot_resume_target_files(payload, resume_path)
@@ -487,6 +586,8 @@ def restore_process_entries(process_entries):
             int(entry_data.get("startframe", 0) or 0),
             int(entry_data.get("endframe", 0) or 0),
             float(entry_data.get("fps", 0) or 0),
+            file_signature=entry_data.get("file_signature") or get_stable_file_signature(filename),
+            display_name=entry_data.get("display_name") or os.path.basename(entry_data.get("filename") or filename),
         )
         list_files_process.append(entry)
         target_paths.append(filename)
@@ -624,7 +725,16 @@ def rebuild_process_entries(destfiles):
     paths = list_target_paths(destfiles)
     ui.globals.ui_target_files = list(paths)
     for path in paths:
-        list_files_process.append(ProcessEntry(path, 0, 0, 0))
+        list_files_process.append(
+            ProcessEntry(
+                path,
+                0,
+                0,
+                0,
+                file_signature=get_stable_file_signature(path),
+                display_name=os.path.basename(path),
+            )
+        )
     return paths
 
 

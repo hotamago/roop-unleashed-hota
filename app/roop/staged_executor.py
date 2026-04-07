@@ -119,15 +119,25 @@ DETECT_PACK_FRAME_COUNT = 256
 def get_entry_signature(entry, options, output_method):
     stat = os.stat(entry.filename)
     effective_single_batch_workers, _, _ = resolve_single_batch_workers(getattr(roop.globals.CFG, "single_batch_workers", 1))
-    signature = {
-        "pipeline_version": PIPELINE_VERSION,
-        "file": {
+    file_signature = getattr(entry, "file_signature", None)
+    if file_signature:
+        file_identity = {
+            "signature": file_signature,
+            "size": stat.st_size,
+            "start": entry.startframe,
+            "end": entry.endframe,
+        }
+    else:
+        file_identity = {
             "path": os.path.abspath(entry.filename),
             "size": stat.st_size,
             "mtime": int(stat.st_mtime),
             "start": entry.startframe,
             "end": entry.endframe,
-        },
+        }
+    signature = {
+        "pipeline_version": PIPELINE_VERSION,
+        "file": file_identity,
         "inputs": hash_facesets(roop.globals.INPUT_FACESETS),
         "targets": hash_target_faces(roop.globals.TARGET_FACES),
         "provider": str(roop.globals.execution_providers),
