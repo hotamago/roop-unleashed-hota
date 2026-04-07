@@ -1,3 +1,5 @@
+import copy
+import hashlib
 import os
 import json
 import shutil
@@ -183,6 +185,29 @@ def build_resume_payload(settings):
     return payload
 
 
+def get_resume_payload_identity(payload):
+    canonical = copy.deepcopy(payload)
+    canonical.pop("created_at", None)
+    canonical.pop("resume_key", None)
+    canonical.pop("__path__", None)
+    for source_ref in canonical.get("sources") or []:
+        source_ref.pop("resume_cached_path", None)
+    return canonical
+
+
+def get_resume_payload_signature(payload):
+    canonical = get_resume_payload_identity(payload)
+    serialized = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def get_resume_payload_path(payload):
+    first_target = os.path.basename(list_files_process[0].filename) if list_files_process else "faceswap"
+    resume_key = get_resume_payload_signature(payload)
+    filename = f"{safe_filename_token(os.path.splitext(first_target)[0])}_{resume_key[:12]}.json"
+    return os.path.join(get_resume_cache_root(), filename), resume_key
+
+
 def get_resume_source_assets_root(resume_path):
     return os.path.join(os.path.splitext(resume_path)[0] + "_assets", "sources")
 
@@ -213,15 +238,21 @@ def snapshot_resume_source_files(payload, resume_path):
     return payload
 
 
-def write_resume_payload(payload):
-    first_target = os.path.basename(list_files_process[0].filename) if list_files_process else "faceswap"
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{safe_filename_token(os.path.splitext(first_target)[0])}.json"
-    resume_path = os.path.join(get_resume_cache_root(), filename)
+def write_resume_payload_with_result(payload):
+    payload = copy.deepcopy(payload)
+    resume_path, resume_key = get_resume_payload_path(payload)
+    payload["resume_key"] = resume_key
     payload = snapshot_resume_source_files(payload, resume_path)
-    with open(resume_path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=True)
+    reused_existing = os.path.isfile(resume_path)
+    if not reused_existing:
+        with open(resume_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=True)
     ui.globals.ui_resume_last_path = resume_path
+    return resume_path, reused_existing
+
+
+def write_resume_payload(payload):
+    resume_path, _ = write_resume_payload_with_result(payload)
     return resume_path
 
 
@@ -1212,8 +1243,9 @@ def save_resume_snapshot_for_run(output_method, enhancer, detection, keep_frames
         restore_original_mouth, num_swap_steps, upsample
     )
     payload = build_resume_payload(settings)
-    resume_path = write_resume_payload(payload)
-    return resume_path, get_resume_status_markdown(resume_path, "Saved resume config for this run")
+    resume_path, reused_existing = write_resume_payload_with_result(payload)
+    status_detail = "Reused existing resume config for this run" if reused_existing else "Saved resume config for this run"
+    return resume_path, get_resume_status_markdown(resume_path, status_detail), reused_existing
 
 
 def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
@@ -1260,12 +1292,15 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     is_processing = True
     start_processing_status("Preparing faceswap job", total_files=len(list_files_process))
     try:
-        resume_path, resume_status = save_resume_snapshot_for_run(
+        resume_path, resume_status, reused_resume = save_resume_snapshot_for_run(
             output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
             selected_mask_engine, clip_text, processing_method, no_face_action, vr_mode, autorotate,
             restore_original_mouth, num_swap_steps, upsample
         )
-        gr.Info(f"Resume config saved: {resume_path}")
+        if reused_resume:
+            gr.Info(f"Resume config reused: {resume_path}")
+        else:
+            gr.Info(f"Resume config saved: {resume_path}")
     except Exception as exc:
         resume_status = get_resume_status_markdown(ui.globals.ui_resume_last_path, f"Resume config was not saved: {exc}")
         gr.Warning(f"Resume config was not saved for this run: {exc}")

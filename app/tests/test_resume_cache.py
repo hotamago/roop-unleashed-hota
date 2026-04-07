@@ -98,3 +98,28 @@ def test_restore_input_faces_from_resume_uses_cached_snapshot_when_original_path
     ])
 
     assert restored_paths == [str(cached_source)]
+
+
+def test_write_resume_payload_reuses_existing_file_for_equivalent_payload(tmp_path, monkeypatch):
+    monkeypatch.setattr(faceswap_tab, "get_resume_cache_root", lambda: str(tmp_path))
+    monkeypatch.setattr(faceswap_tab, "list_resume_cache_files", lambda: [], raising=False)
+    source_path = tmp_path / "gradio" / "source.png"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(b"source-image")
+    source_face_set = FaceSet()
+    source_face_set.faces.append(make_face())
+    roop.globals.INPUT_FACESETS.append(source_face_set)
+    ui.globals.ui_input_face_refs.append({"type": "image_face", "path": str(source_path), "face_index": 0})
+    faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
+
+    now_values = iter([1111111111, 2222222222])
+    stamp_values = iter(["20260101_010101", "20270101_020202"])
+    monkeypatch.setattr(faceswap_tab.time, "time", lambda: next(now_values))
+    monkeypatch.setattr(faceswap_tab.time, "strftime", lambda fmt: next(stamp_values))
+
+    first_resume_path = faceswap_tab.write_resume_payload(faceswap_tab.build_resume_payload({"output_method": "File"}))
+    second_resume_path = faceswap_tab.write_resume_payload(faceswap_tab.build_resume_payload({"output_method": "File"}))
+
+    assert first_resume_path == second_resume_path
+    assert len(list(tmp_path.glob("*.json"))) == 1
+    assert len(list(tmp_path.glob("*_assets"))) == 1
