@@ -8,6 +8,7 @@ import gradio as gr
 import roop.utilities as util
 import roop.globals
 import ui.globals
+from roop.cache_paths import get_gradio_temp_root
 from roop.face_util import extract_face_images, create_blank_image
 from roop.capturer import get_video_frame, get_video_frame_total, get_image_frame
 from roop.ProcessEntry import ProcessEntry
@@ -192,6 +193,11 @@ def get_resume_payload_identity(payload):
     canonical.pop("__path__", None)
     for source_ref in canonical.get("sources") or []:
         source_ref.pop("resume_cached_path", None)
+    targets = canonical.get("targets") or {}
+    for target_entry in targets.get("files") or []:
+        target_entry.pop("resume_cached_path", None)
+    for target_face_ref in targets.get("selected_faces") or []:
+        target_face_ref.pop("resume_cached_path", None)
     return canonical
 
 
@@ -210,6 +216,35 @@ def get_resume_payload_path(payload):
 
 def get_resume_source_assets_root(resume_path):
     return os.path.join(os.path.splitext(resume_path)[0] + "_assets", "sources")
+
+
+def get_resume_target_assets_root(resume_path):
+    return os.path.join(os.path.splitext(resume_path)[0] + "_assets", "targets")
+
+
+def is_path_within_root(path, root):
+    if not path or not root:
+        return False
+    try:
+        normalized_path = os.path.normcase(os.path.normpath(os.path.abspath(str(path))))
+        normalized_root = os.path.normcase(os.path.normpath(os.path.abspath(str(root))))
+        return os.path.commonpath([normalized_path, normalized_root]) == normalized_root
+    except ValueError:
+        return False
+
+
+def should_snapshot_target_path(target_path):
+    if not target_path:
+        return False
+    candidate_roots = []
+    gradio_temp_dir = os.environ.get("GRADIO_TEMP_DIR")
+    if gradio_temp_dir:
+        candidate_roots.append(gradio_temp_dir)
+    try:
+        candidate_roots.append(str(get_gradio_temp_root()))
+    except Exception:
+        pass
+    return any(is_path_within_root(target_path, root) for root in candidate_roots)
 
 
 def snapshot_resume_source_files(payload, resume_path):
@@ -238,15 +273,46 @@ def snapshot_resume_source_files(payload, resume_path):
     return payload
 
 
+def snapshot_resume_target_files(payload, resume_path):
+    targets = payload.get("targets") or {}
+    target_refs = []
+    for entry in targets.get("files") or []:
+        target_refs.append((entry, "filename"))
+    for face_ref in targets.get("selected_faces") or []:
+        target_refs.append((face_ref, "path"))
+    if len(target_refs) < 1:
+        return payload
+    assets_root = get_resume_target_assets_root(resume_path)
+    copied_paths = {}
+    for target_ref, path_key in target_refs:
+        target_path = normalize_target_path(target_ref.get(path_key), warn=False)
+        if target_path is None or not should_snapshot_target_path(target_path):
+            target_ref.pop("resume_cached_path", None)
+            continue
+        cache_key = os.path.normcase(os.path.normpath(target_path))
+        cached_path = copied_paths.get(cache_key)
+        if cached_path is None:
+            stem, ext = os.path.splitext(os.path.basename(target_path))
+            safe_name = safe_filename_token(stem)
+            filename = f"{len(copied_paths):03d}_{safe_name}{ext.lower()}"
+            cached_path = os.path.join(assets_root, filename)
+            os.makedirs(assets_root, exist_ok=True)
+            if os.path.normcase(os.path.normpath(target_path)) != os.path.normcase(os.path.normpath(cached_path)):
+                shutil.copy2(target_path, cached_path)
+            copied_paths[cache_key] = cached_path
+        target_ref["resume_cached_path"] = cached_path
+    return payload
+
+
 def write_resume_payload_with_result(payload):
     payload = copy.deepcopy(payload)
     resume_path, resume_key = get_resume_payload_path(payload)
     payload["resume_key"] = resume_key
     payload = snapshot_resume_source_files(payload, resume_path)
+    payload = snapshot_resume_target_files(payload, resume_path)
     reused_existing = os.path.isfile(resume_path)
-    if not reused_existing:
-        with open(resume_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, ensure_ascii=True)
+    with open(resume_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=True)
     ui.globals.ui_resume_last_path = resume_path
     return resume_path, reused_existing
 
@@ -381,7 +447,7 @@ def restore_input_faces_from_resume(source_refs):
 
 
 def append_target_face_from_resume(face_ref):
-    target_path = normalize_target_path(face_ref.get("path"))
+    target_path = resolve_resume_target_path(face_ref, "path")
     if target_path is None:
         return
     frame_number = int(face_ref.get("frame_number", 0) or 0)
@@ -413,7 +479,7 @@ def restore_process_entries(process_entries):
     list_files_process.clear()
     target_paths = []
     for entry_data in process_entries:
-        filename = normalize_target_path(entry_data.get("filename"))
+        filename = resolve_resume_target_path(entry_data, "filename")
         if filename is None:
             continue
         entry = ProcessEntry(
@@ -484,7 +550,7 @@ def extract_target_path(item):
     return str(item)
 
 
-def normalize_target_path(raw_path: str):
+def normalize_target_path(raw_path: str, warn=True):
     if raw_path is None:
         return None
     clean_path = raw_path.strip().strip('"').strip("'")
@@ -494,15 +560,33 @@ def normalize_target_path(raw_path: str):
         clean_path = os.path.abspath(os.path.join(os.getcwd(), clean_path))
     clean_path = os.path.normpath(clean_path)
     if not os.path.exists(clean_path):
-        gr.Warning(f"Target path not found: {clean_path}")
+        if warn:
+            gr.Warning(f"Target path not found: {clean_path}")
         return None
     if os.path.isdir(clean_path):
-        gr.Warning(f"Directories are not supported yet: {clean_path}")
+        if warn:
+            gr.Warning(f"Directories are not supported yet: {clean_path}")
         return None
     if not (util.is_image(clean_path) or util.is_video(clean_path) or clean_path.lower().endswith('gif')):
-        gr.Warning(f"Unsupported target file: {clean_path}")
+        if warn:
+            gr.Warning(f"Unsupported target file: {clean_path}")
         return None
     return clean_path
+
+
+def resolve_resume_target_path(target_ref, path_key):
+    target_path = normalize_target_path(target_ref.get(path_key), warn=False)
+    if target_path is None:
+        target_path = normalize_target_path(target_ref.get("resume_cached_path"), warn=False)
+    if target_path is not None:
+        return target_path
+    original_path = target_ref.get(path_key)
+    if original_path:
+        normalize_target_path(original_path, warn=True)
+    cached_path = target_ref.get("resume_cached_path")
+    if cached_path:
+        gr.Warning(f"Resume target snapshot not found: {os.path.normpath(cached_path)}")
+    return None
 
 
 def list_target_paths(files):
@@ -1065,10 +1149,6 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
         current_frame = get_image_frame(filename)
     if current_frame is None:
         return None, None, gr.Slider(info=timeinfo)
-    
-    layers = None
-    if maskimage is not None:
-        layers = maskimage["layers"]
 
     if not fake_preview or len(roop.globals.INPUT_FACESETS) < 1:
         return gr.Image(value=util.convert_to_gradio(current_frame), visible=True), gr.ImageEditor(visible=False), gr.Slider(info=timeinfo)
@@ -1086,7 +1166,6 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
     mask_engine = map_mask_engine(selected_mask_engine, clip_text)
 
     roop.globals.execution_threads = roop.globals.CFG.max_threads
-    mask = layers[0] if layers is not None else None
     face_index = SELECTED_INPUT_FACE_INDEX
     if len(roop.globals.INPUT_FACESETS) <= face_index:
         face_index = 0
