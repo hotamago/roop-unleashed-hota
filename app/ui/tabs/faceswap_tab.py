@@ -5,6 +5,7 @@ import json
 import shutil
 import time
 import gradio as gr
+import numpy as np
 import roop.utilities as util
 import roop.globals
 import ui.globals
@@ -232,6 +233,9 @@ def snapshot_target_face_refs():
         base_ref["path"] = os.path.abspath(base_ref["path"])
         base_ref["frame_number"] = int(base_ref.get("frame_number", 0) or 0)
         base_ref["face_index"] = int(base_ref.get("face_index", 0) or 0)
+        face_embedding = get_face_embedding_vector(roop.globals.TARGET_FACES[index])
+        if face_embedding is not None:
+            base_ref["face_embedding"] = face_embedding.tolist()
         file_signature = get_target_file_signature(base_ref, "path")
         if file_signature:
             base_ref["file_signature"] = file_signature
@@ -587,7 +591,7 @@ def append_target_face_from_resume(face_ref):
     if is_video and frame_number <= 0:
         frame_number = 1
     faces_data = extract_face_images(target_path, (is_video, frame_number))
-    face_index = int(face_ref.get("face_index", 0) or 0)
+    face_index = select_target_face_index_from_resume(faces_data, face_ref)
     if face_index < 0 or face_index >= len(faces_data):
         raise ValueError(f"Target face index {face_index} is out of range for {target_path}")
     roop.globals.TARGET_FACES.append(faces_data[face_index][0])
@@ -597,6 +601,50 @@ def append_target_face_from_resume(face_ref):
     restored_ref["frame_number"] = frame_number
     restored_ref["face_index"] = face_index
     ui.globals.ui_target_face_refs.append(restored_ref)
+
+
+def get_face_embedding_vector(face):
+    if face is None:
+        return None
+    embedding = getattr(face, "embedding", None)
+    if embedding is None:
+        try:
+            embedding = face["embedding"]
+        except Exception:
+            embedding = None
+    if embedding is None:
+        embedding = getattr(face, "normed_embedding", None)
+    if embedding is None:
+        return None
+    vector = np.asarray(embedding, dtype=np.float32).reshape(-1)
+    if vector.size < 1 or not np.isfinite(vector).all():
+        return None
+    return vector
+
+
+def select_target_face_index_from_resume(faces_data, face_ref):
+    stored_embedding = face_ref.get("face_embedding")
+    if stored_embedding is not None:
+        stored_vector = np.asarray(stored_embedding, dtype=np.float32).reshape(-1)
+        stored_norm = float(np.linalg.norm(stored_vector))
+        best_index = None
+        best_distance = None
+        if stored_vector.size > 0 and stored_norm > 0:
+            for index, (face, _thumb) in enumerate(faces_data):
+                candidate_vector = get_face_embedding_vector(face)
+                if candidate_vector is None or candidate_vector.shape != stored_vector.shape:
+                    continue
+                candidate_norm = float(np.linalg.norm(candidate_vector))
+                if candidate_norm <= 0:
+                    continue
+                similarity = float(np.dot(candidate_vector, stored_vector) / (candidate_norm * stored_norm))
+                distance = 1.0 - similarity
+                if best_distance is None or distance < best_distance:
+                    best_distance = distance
+                    best_index = index
+            if best_index is not None:
+                return best_index
+    return int(face_ref.get("face_index", 0) or 0)
 
 
 def restore_target_faces_from_resume(face_refs):

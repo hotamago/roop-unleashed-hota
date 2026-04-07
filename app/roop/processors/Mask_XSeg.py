@@ -51,12 +51,17 @@ class Mask_XSeg():
         io_binding.bind_output(self.model_outputs[0].name, self.devicename)
         self.model_xseg.run_with_iobinding(io_binding)
         ort_outs = io_binding.copy_outputs_to_cpu()
-        result = ort_outs[0][0]
+        return self._normalize_mask_output(ort_outs[0][0])
+
+
+    def _normalize_mask_output(self, result):
+        if result.ndim == 4 and result.shape[0] == 1:
+            result = result[0]
         result = np.clip(result, 0, 1.0)
         result[result < 0.1] = 0
-        # invert values to mask areas to keep
-        result = 1.0 - result
-        return result       
+        if result.ndim == 2:
+            result = result[..., None]
+        return 1.0 - result
 
 
     def RunBatch(self, images, keywords:str, batch_size=1):
@@ -70,10 +75,7 @@ class Mask_XSeg():
             batch_input = np.stack(batch, axis=0).astype(np.float32)
             batch_outputs = self.model_xseg.run(None, {self.model_inputs[0].name: batch_input})[0]
             for result in batch_outputs:
-                result = result[0]
-                result = np.clip(result, 0, 1.0)
-                result[result < 0.1] = 0
-                outputs.append(1.0 - result)
+                outputs.append(self._normalize_mask_output(result))
         return outputs
 
 

@@ -26,6 +26,30 @@ class FakeSingleBatchProcessor:
         return np.full_like(frame, self.worker_id + 1), 1
 
 
+class FakeBrokenBatchSwapProcessor:
+    supports_batch = True
+    batch_size_limit = None
+    supports_parallel_single_batch = True
+
+    def Run(self, _source_face, _target_face, frame):
+        return np.ones_like(frame[0], dtype=np.float32) * 0.5
+
+    def RunBatch(self, _source_faces, _target_faces, frames, _batch_size):
+        return [frame[0].copy() for frame in frames]
+
+
+class FakeShortBatchSwapProcessor:
+    supports_batch = True
+    batch_size_limit = None
+    supports_parallel_single_batch = True
+
+    def Run(self, _source_face, _target_face, frame):
+        return np.ones_like(frame[0], dtype=np.float32) * 0.5
+
+    def RunBatch(self, _source_faces, _target_faces, frames, _batch_size):
+        return [np.ones_like(frames[0][0], dtype=np.float32) * 0.5]
+
+
 def test_process_mgr_parallelizes_single_batch_processors(monkeypatch):
     mgr = ProcessMgr(None)
     mgr.options = SimpleNamespace(num_swap_steps=1, subsample_size=256)
@@ -48,6 +72,64 @@ def test_process_mgr_parallelizes_single_batch_processors(monkeypatch):
     assert set(outputs.keys()) == {"task_a", "task_b", "task_c"}
     assert all(isinstance(value, np.ndarray) for value in outputs.values())
     assert processor.released is False
+
+
+def test_process_mgr_disables_broken_swap_batch_outputs():
+    mgr = ProcessMgr(None)
+    mgr.options = SimpleNamespace(num_swap_steps=1, subsample_size=128)
+    mgr.input_face_datas = [SimpleNamespace(faces=[SimpleNamespace()])]
+    mgr.deserialize_face = lambda payload: payload
+    processor = FakeBrokenBatchSwapProcessor()
+    tasks = [
+        {
+            "cache_key": "task_a",
+            "input_index": 0,
+            "target_face": {"id": "a"},
+            "aligned_frame": np.zeros((128, 128, 3), dtype=np.uint8),
+        },
+        {
+            "cache_key": "task_b",
+            "input_index": 0,
+            "target_face": {"id": "b"},
+            "aligned_frame": np.zeros((128, 128, 3), dtype=np.uint8),
+        },
+    ]
+
+    outputs = mgr.run_swap_tasks_batch(tasks, processor, batch_size=8)
+
+    assert processor.supports_batch is False
+    assert processor.batch_size_limit == 1
+    assert outputs["task_a"].mean() > 0
+    assert outputs["task_b"].mean() > 0
+
+
+def test_process_mgr_disables_swap_batch_when_output_count_mismatches():
+    mgr = ProcessMgr(None)
+    mgr.options = SimpleNamespace(num_swap_steps=1, subsample_size=128)
+    mgr.input_face_datas = [SimpleNamespace(faces=[SimpleNamespace()])]
+    mgr.deserialize_face = lambda payload: payload
+    processor = FakeShortBatchSwapProcessor()
+    tasks = [
+        {
+            "cache_key": "task_a",
+            "input_index": 0,
+            "target_face": {"id": "a"},
+            "aligned_frame": np.zeros((128, 128, 3), dtype=np.uint8),
+        },
+        {
+            "cache_key": "task_b",
+            "input_index": 0,
+            "target_face": {"id": "b"},
+            "aligned_frame": np.zeros((128, 128, 3), dtype=np.uint8),
+        },
+    ]
+
+    outputs = mgr.run_swap_tasks_batch(tasks, processor, batch_size=8)
+
+    assert processor.supports_batch is False
+    assert processor.batch_size_limit == 1
+    assert outputs["task_a"].mean() > 0
+    assert outputs["task_b"].mean() > 0
 
 
 def test_process_mgr_reuses_single_batch_worker_sessions_across_calls(monkeypatch):

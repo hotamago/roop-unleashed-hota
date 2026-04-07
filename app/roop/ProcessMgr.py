@@ -358,6 +358,21 @@ class ProcessMgr():
         return fake_frame.astype(np.uint8)
 
 
+    def run_swap_single_outputs(self, processor, source_faces, target_faces, prepared_frames):
+        return [
+            self.normalize_swap_frame(processor.Run(source_face, target_face, prepared_frame))
+            for source_face, target_face, prepared_frame in zip(source_faces, target_faces, prepared_frames)
+        ]
+
+
+    def disable_broken_swap_batch(self, processor):
+        processor._batch_output_validation_state = "broken"
+        processor.batch_size_limit = 1
+        processor.supports_batch = False
+        if hasattr(processor, "supports_parallel_single_batch"):
+            processor.supports_parallel_single_batch = False
+
+
     def run_swap_tasks_batch(self, tasks, processor, batch_size: int = 1):
         if not tasks:
             return {}
@@ -392,11 +407,20 @@ class ProcessMgr():
 
             if getattr(processor, "supports_batch", False):
                 raw_outputs = processor.RunBatch(source_faces, target_faces, prepared_frames, max(1, batch_size))
-                normalized_outputs = [self.normalize_swap_frame(output) for output in raw_outputs]
+                if len(raw_outputs) != len(prepared_frames):
+                    self.disable_broken_swap_batch(processor)
+                    normalized_outputs = self.run_swap_single_outputs(processor, source_faces, target_faces, prepared_frames)
+                else:
+                    normalized_outputs = [self.normalize_swap_frame(output) for output in raw_outputs]
+                    normalized_outputs = self.validate_swap_batch_outputs(
+                        processor,
+                        source_faces,
+                        target_faces,
+                        prepared_frames,
+                        normalized_outputs,
+                    )
             else:
-                normalized_outputs = []
-                for source_face, target_face, prepared_frame in zip(source_faces, target_faces, prepared_frames):
-                    normalized_outputs.append(self.normalize_swap_frame(processor.Run(source_face, target_face, prepared_frame)))
+                normalized_outputs = self.run_swap_single_outputs(processor, source_faces, target_faces, prepared_frames)
 
             for (task_index, slice_index), normalized_output in zip(frame_map, normalized_outputs):
                 prepared_tasks[task_index]["current_frames"][slice_index] = normalized_output
@@ -406,6 +430,30 @@ class ProcessMgr():
             fake_frame = self.explode_pixel_boost(prepared_task["current_frames"], model_output_size, subsample_total, self.options.subsample_size)
             outputs[prepared_task["cache_key"]] = fake_frame.astype(np.uint8)
         return outputs
+
+
+    def validate_swap_batch_outputs(self, processor, source_faces, target_faces, prepared_frames, normalized_outputs):
+        if len(prepared_frames) <= 1:
+            return normalized_outputs
+        if getattr(processor, "_batch_output_validation_state", None) == "verified":
+            return normalized_outputs
+        if getattr(processor, "_batch_output_validation_state", None) == "broken":
+            return self.run_swap_single_outputs(processor, source_faces, target_faces, prepared_frames)
+
+        reference_output = self.normalize_swap_frame(processor.Run(source_faces[0], target_faces[0], prepared_frames[0]))
+        batch_output = normalized_outputs[0]
+        if np.allclose(batch_output.astype(np.float32), reference_output.astype(np.float32), atol=1.0):
+            processor._batch_output_validation_state = "verified"
+            return normalized_outputs
+
+        self.disable_broken_swap_batch(processor)
+        return [
+            reference_output,
+            *[
+                self.normalize_swap_frame(processor.Run(source_face, target_face, prepared_frame))
+                for source_face, target_face, prepared_frame in zip(source_faces[1:], target_faces[1:], prepared_frames[1:])
+            ],
+        ]
 
 
     def should_parallelize_single_batch(self, processor):

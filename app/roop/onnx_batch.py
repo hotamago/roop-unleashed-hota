@@ -34,6 +34,17 @@ def _patch_value_info_batch_dim(value_info, batch_dim_param: str) -> bool:
     return True
 
 
+def _has_dynamic_first_dim(value_info) -> bool:
+    value_type = getattr(value_info, "type", None)
+    if value_type is None or not value_type.HasField("tensor_type"):
+        return False
+    shape = value_type.tensor_type.shape
+    if len(shape.dim) < 1:
+        return False
+    first_dim = shape.dim[0]
+    return not first_dim.HasField("dim_value")
+
+
 def _needs_native_batch_patch(model: onnx.ModelProto) -> bool:
     initializer_names = {initializer.name for initializer in model.graph.initializer}
     for value_info in model.graph.input:
@@ -51,6 +62,30 @@ def _needs_native_batch_patch(model: onnx.ModelProto) -> bool:
     return False
 
 
+def _has_safe_dynamic_batch_signature(model: onnx.ModelProto) -> bool:
+    initializer_names = {initializer.name for initializer in model.graph.initializer}
+    for value_info in model.graph.input:
+        if value_info.name in initializer_names:
+            continue
+        if not _has_dynamic_first_dim(value_info):
+            return False
+    for value_info in model.graph.output:
+        if not _has_dynamic_first_dim(value_info):
+            return False
+    return True
+
+
+def _is_safe_cached_model(path: Path, source_path: Path) -> bool:
+    if not path.exists():
+        return False
+    if path.resolve() == source_path.resolve():
+        return True
+    try:
+        return _has_safe_dynamic_batch_signature(onnx.load(str(path)))
+    except Exception:
+        return False
+
+
 def ensure_native_batch_model(model_path: str, batch_dim_param: str = "batch") -> str:
     source_path = Path(model_path)
     if not source_path.exists():
@@ -58,7 +93,7 @@ def ensure_native_batch_model(model_path: str, batch_dim_param: str = "batch") -
 
     cache_key = _get_source_cache_key(source_path)
     cached_path = _RESOLVED_MODEL_CACHE.get(cache_key)
-    if cached_path is not None and Path(cached_path).exists():
+    if cached_path is not None and _is_safe_cached_model(Path(cached_path), source_path):
         return cached_path
 
     model = onnx.load(str(source_path))
@@ -68,7 +103,7 @@ def ensure_native_batch_model(model_path: str, batch_dim_param: str = "batch") -
         return resolved_path
 
     patched_path = _build_patched_model_path(source_path, cache_key)
-    if patched_path.exists():
+    if _is_safe_cached_model(patched_path, source_path):
         resolved_path = str(patched_path)
         _RESOLVED_MODEL_CACHE[cache_key] = resolved_path
         return resolved_path
@@ -95,6 +130,10 @@ def ensure_native_batch_model(model_path: str, batch_dim_param: str = "batch") -
     try:
         onnx.checker.check_model(patched_model)
     except Exception:
+        resolved_path = str(source_path)
+        _RESOLVED_MODEL_CACHE[cache_key] = resolved_path
+        return resolved_path
+    if not _has_safe_dynamic_batch_signature(patched_model):
         resolved_path = str(source_path)
         _RESOLVED_MODEL_CACHE[cache_key] = resolved_path
         return resolved_path

@@ -114,7 +114,7 @@ def hash_target_faces(target_faces):
     return hashlib.sha256(json_dumps(payload).encode("utf-8")).hexdigest()
 
 
-PIPELINE_VERSION = 7
+PIPELINE_VERSION = 8
 DETECT_PACK_FRAME_COUNT = 256
 
 
@@ -925,9 +925,52 @@ class StagedBatchExecutor:
         write_json(mask_dir.parent / "manifest.json", manifest)
 
 
+    def run_mask_single_outputs(self, processor, original_batch):
+        return [processor.Run(original, self.options.masking_text) for original in original_batch]
+
+
+    def disable_broken_mask_batch(self, processor):
+        processor._mask_batch_output_validation_state = "broken"
+        if hasattr(processor, "supports_batch"):
+            processor.supports_batch = False
+        if hasattr(processor, "batch_size_limit"):
+            processor.batch_size_limit = 1
+        if hasattr(processor, "supports_parallel_single_batch"):
+            processor.supports_parallel_single_batch = False
+
+
+    def validate_mask_batch_outputs(self, processor, original_batch, masks):
+        if len(original_batch) <= 1:
+            return masks
+        if len(masks) != len(original_batch):
+            self.disable_broken_mask_batch(processor)
+            return self.run_mask_single_outputs(processor, original_batch)
+        if getattr(processor, "_mask_batch_output_validation_state", None) == "verified":
+            return masks
+        if getattr(processor, "_mask_batch_output_validation_state", None) == "broken":
+            return self.run_mask_single_outputs(processor, original_batch)
+
+        reference_mask = processor.Run(original_batch[0], self.options.masking_text)
+        batch_mask = masks[0]
+        if reference_mask.shape == batch_mask.shape and np.allclose(
+            reference_mask.astype(np.float32),
+            batch_mask.astype(np.float32),
+            atol=1e-3,
+        ):
+            processor._mask_batch_output_validation_state = "verified"
+            return masks
+
+        self.disable_broken_mask_batch(processor)
+        return [
+            reference_mask,
+            *self.run_mask_single_outputs(processor, original_batch[1:]),
+        ]
+
+
     def process_full_mask_batch(self, task_batch, original_batch, input_cache, output_cache, output_cache_path, mask_mgr, processor, processed_tasks, task_count, memory_plan, flush_cache=True):
         if getattr(processor, "supports_batch", False):
             masks = processor.RunBatch(original_batch, self.options.masking_text, memory_plan["mask_batch_size"])
+            masks = self.validate_mask_batch_outputs(processor, original_batch, masks)
             for task_meta, original, mask in zip(task_batch, original_batch, masks):
                 current_frame = input_cache[task_meta["cache_key"]]
                 mask = cv2.resize(mask, (current_frame.shape[1], current_frame.shape[0]))

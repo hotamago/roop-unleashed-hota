@@ -104,6 +104,53 @@ def test_ensure_enhance_stage_flushes_cache_once_per_chunk(tmp_path, monkeypatch
     assert set(write_calls[0].keys()) == {"face_a", "face_b"}
 
 
+def test_process_full_mask_batch_falls_back_when_batch_masks_are_broken(tmp_path, monkeypatch):
+    executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}, "mask_xseg": {}}))
+    task_batch = [
+        {"cache_key": "face_a", "aligned_frame": np.full((2, 2, 3), 10, dtype=np.uint8)},
+        {"cache_key": "face_b", "aligned_frame": np.full((2, 2, 3), 10, dtype=np.uint8)},
+    ]
+    original_batch = [task["aligned_frame"] for task in task_batch]
+    input_cache = {
+        "face_a": np.full((2, 2, 3), 200, dtype=np.uint8),
+        "face_b": np.full((2, 2, 3), 200, dtype=np.uint8),
+    }
+    output_cache = {}
+
+    class FakeBrokenMaskProcessor:
+        supports_batch = True
+
+        def Run(self, _image, _keywords):
+            return np.zeros((2, 2, 1), dtype=np.float32)
+
+        def RunBatch(self, _images, _keywords, _batch_size):
+            return [
+                np.ones((2, 1), dtype=np.float32),
+                np.ones((2, 1), dtype=np.float32),
+            ]
+
+    monkeypatch.setattr(executor, "update_progress", lambda *args, **kwargs: None)
+
+    processor = FakeBrokenMaskProcessor()
+    executor.process_full_mask_batch(
+        task_batch,
+        original_batch,
+        input_cache,
+        output_cache,
+        tmp_path / "mask.bin",
+        None,
+        processor,
+        0,
+        2,
+        {"mask_batch_size": 8},
+        flush_cache=False,
+    )
+
+    assert processor.supports_batch is False
+    assert np.array_equal(output_cache["face_a"], input_cache["face_a"])
+    assert np.array_equal(output_cache["face_b"], input_cache["face_b"])
+
+
 def test_ensure_full_compose_stage_streams_source_once_across_packs(tmp_path, monkeypatch):
     executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
     entry = ProcessEntry("clip.mp4", 0, 4, 30.0)
@@ -196,6 +243,105 @@ def test_ensure_full_compose_stage_streams_source_once_across_packs(tmp_path, mo
     )
 
     assert iter_calls == [(0, 4)]
+
+
+def test_ensure_full_compose_stage_writes_cached_swapped_frames(tmp_path, monkeypatch):
+    executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
+    entry = ProcessEntry("clip.mp4", 0, 2, 30.0)
+    intermediate_video = tmp_path / "composite.mp4"
+    stages = {"composite": False}
+    manifest = {"frame_count": 2}
+    memory_plan = {"prefetch_frames": 2}
+    written_frames = []
+
+    original_frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    swapped_frame = np.full((2, 2, 3), 255, dtype=np.uint8)
+
+    class FakeCapture:
+        def get(self, prop):
+            if prop == 3:
+                return 2
+            if prop == 4:
+                return 2
+            return 0
+
+        def release(self):
+            return None
+
+    class FakeWriter:
+        def __init__(self, filename, *_args, **_kwargs):
+            self.filename = filename
+
+        def write_frame(self, frame):
+            written_frames.append(frame.copy())
+
+        def close(self):
+            with open(self.filename, "wb") as handle:
+                handle.write(b"ok")
+
+    class FakeProcessMgr:
+        def __init__(self, _progress):
+            return None
+
+        def initialize(self, *_args, **_kwargs):
+            return None
+
+        def compose_task(self, result, _task_meta, fake_frame, _enhanced_frame=None):
+            return fake_frame.copy()
+
+        def release_resources(self):
+            return None
+
+    def fake_iter_detect_packs(_detect_dir):
+        return [
+            {
+                "start_sequence": 1,
+                "end_sequence": 2,
+                "frames": [
+                    {"frame_number": 0, "tasks": [{"cache_key": "f000001_t000", "target_face": {}, "mask_offsets": [0] * 10}], "fallback": False},
+                    {"frame_number": 1, "tasks": [{"cache_key": "f000002_t000", "target_face": {}, "mask_offsets": [0] * 10}], "fallback": False},
+                ],
+            }
+        ]
+
+    def fake_iter_video_chunk(_video_path, frame_start, frame_end, _prefetch_frames):
+        for frame_number in range(frame_start, frame_end):
+            yield frame_number, original_frame.copy()
+
+    monkeypatch.setattr("roop.staged_executor.open_video_capture", lambda _path: FakeCapture())
+    monkeypatch.setattr("roop.staged_executor.FFMPEG_VideoWriter", FakeWriter)
+    monkeypatch.setattr("roop.staged_executor.ProcessMgr", FakeProcessMgr)
+    monkeypatch.setattr("roop.staged_executor.iter_video_chunk", fake_iter_video_chunk)
+    monkeypatch.setattr(executor, "iter_detect_packs", fake_iter_detect_packs)
+    monkeypatch.setattr(
+        executor,
+        "read_stage_cache_map",
+        lambda _path: {
+            "f000001_t000": swapped_frame.copy(),
+            "f000002_t000": swapped_frame.copy(),
+        },
+    )
+    monkeypatch.setattr(executor, "update_progress", lambda *args, **kwargs: None)
+    monkeypatch.setattr(roop.globals.CFG, "max_threads", 1, raising=False)
+    monkeypatch.setattr(roop.globals, "no_face_action", eNoFaceAction.USE_ORIGINAL_FRAME, raising=False)
+
+    executor.ensure_full_compose_stage(
+        entry,
+        2,
+        30.0,
+        tmp_path / "detect",
+        tmp_path / "swap",
+        tmp_path / "mask",
+        tmp_path / "enhance",
+        intermediate_video,
+        stages,
+        manifest,
+        memory_plan,
+    )
+
+    assert len(written_frames) == 2
+    assert np.array_equal(written_frames[0], swapped_frame)
+    assert np.array_equal(written_frames[1], swapped_frame)
 
 
 def test_pipeline_steps_and_detect_pack_ranges_follow_current_config(monkeypatch):

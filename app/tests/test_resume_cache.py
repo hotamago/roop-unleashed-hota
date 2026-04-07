@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
+
 import roop.globals
 import ui.globals
 from roop.FaceSet import FaceSet
@@ -17,7 +19,7 @@ def test_build_resume_payload_captures_sources_targets_and_settings(monkeypatch)
     source_face_set = FaceSet()
     source_face_set.faces.append(make_face([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]))
     roop.globals.INPUT_FACESETS.append(source_face_set)
-    roop.globals.TARGET_FACES.append(SimpleNamespace())
+    roop.globals.TARGET_FACES.append(SimpleNamespace(embedding=[0.1, 0.2, 0.3]))
     ui.globals.ui_input_face_refs.append({"type": "image_face", "path": "C:/source.png", "face_index": 0})
     ui.globals.ui_target_face_refs.append({"path": "C:/target.mp4", "frame_number": 12, "face_index": 1})
     faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 5, 25, 30.0)]
@@ -31,6 +33,7 @@ def test_build_resume_payload_captures_sources_targets_and_settings(monkeypatch)
     assert payload["sources"][0]["mask_offsets"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     assert payload["targets"]["files"][0]["startframe"] == 5
     assert payload["targets"]["selected_faces"][0]["frame_number"] == 12
+    assert np.allclose(payload["targets"]["selected_faces"][0]["face_embedding"], [0.1, 0.2, 0.3])
     assert payload["settings"]["output_method"] == "File"
 
 
@@ -66,6 +69,24 @@ def test_resume_job_signature_ignores_settings_changes():
 
     assert faceswap_tab.get_resume_payload_signature(payload_a) != faceswap_tab.get_resume_payload_signature(payload_b)
     assert faceswap_tab.get_resume_job_signature(payload_a) == faceswap_tab.get_resume_job_signature(payload_b)
+
+
+def test_resume_signatures_change_when_selected_target_face_identity_changes():
+    source_face_set = FaceSet()
+    source_face_set.faces.append(make_face())
+    roop.globals.INPUT_FACESETS.append(source_face_set)
+    ui.globals.ui_input_face_refs.append({"type": "image_face", "path": "C:/source.png", "face_index": 0})
+    ui.globals.ui_target_face_refs.append({"path": "C:/target.mp4", "frame_number": 12, "face_index": 0})
+    faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
+
+    roop.globals.TARGET_FACES[:] = [SimpleNamespace(embedding=np.array([1.0, 0.0], dtype=np.float32))]
+    payload_a = faceswap_tab.build_resume_payload({"output_method": "File"})
+
+    roop.globals.TARGET_FACES[:] = [SimpleNamespace(embedding=np.array([0.0, 1.0], dtype=np.float32))]
+    payload_b = faceswap_tab.build_resume_payload({"output_method": "File"})
+
+    assert faceswap_tab.get_resume_payload_signature(payload_a) != faceswap_tab.get_resume_payload_signature(payload_b)
+    assert faceswap_tab.get_resume_job_signature(payload_a) != faceswap_tab.get_resume_job_signature(payload_b)
 
 
 def test_write_resume_payload_snapshots_source_files_into_resume_cache(tmp_path, monkeypatch):
@@ -205,6 +226,34 @@ def test_append_target_face_from_resume_uses_cached_snapshot_when_original_path_
 
     assert len(roop.globals.TARGET_FACES) == 1
     assert ui.globals.ui_target_face_refs[0]["path"] == str(cached_target)
+
+
+def test_append_target_face_from_resume_prefers_embedding_match_over_saved_index(tmp_path, monkeypatch):
+    cached_target = tmp_path / "resume_cache" / "cached-target.png"
+    cached_target.parent.mkdir(parents=True, exist_ok=True)
+    cached_target.write_bytes(b"cached-target")
+    wrong_face = SimpleNamespace(id="wrong", embedding=np.array([1.0, 0.0], dtype=np.float32))
+    right_face = SimpleNamespace(id="right", embedding=np.array([0.0, 1.0], dtype=np.float32))
+    monkeypatch.setattr(
+        faceswap_tab,
+        "extract_face_images",
+        lambda target_path, video_info: [
+            (wrong_face, "wrong-thumb"),
+            (right_face, "right-thumb"),
+        ],
+    )
+    monkeypatch.setattr(faceswap_tab.util, "convert_to_gradio", lambda image: image)
+
+    faceswap_tab.append_target_face_from_resume({
+        "path": str(tmp_path / "missing" / "target.png"),
+        "resume_cached_path": str(cached_target),
+        "frame_number": 0,
+        "face_index": 0,
+        "face_embedding": [0.0, 1.0],
+    })
+
+    assert roop.globals.TARGET_FACES[0] is right_face
+    assert ui.globals.ui_target_face_refs[0]["face_index"] == 1
 
 
 def test_write_resume_payload_refreshes_existing_resume_file_with_missing_target_snapshot(tmp_path, monkeypatch):
