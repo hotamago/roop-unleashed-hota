@@ -19,6 +19,7 @@ from queue import Queue
 from tqdm import tqdm
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
 from roop.StreamWriter import StreamWriter
+from roop.video_io import open_video_capture, resolve_video_writer_config
 import roop.globals
 from roop.progress_status import format_duration, get_processing_status_line, publish_processing_progress
 
@@ -706,7 +707,7 @@ class ProcessMgr():
 
 
     def run_batch_inmem(self, output_method, source_video, target_video, frame_start, frame_end, fps, threads:int = 1, skip_audio=False):
-        cap = cv2.VideoCapture(source_video)
+        cap = open_video_capture(source_video)
         frame_count = (frame_end - frame_start) + 1
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -735,7 +736,17 @@ class ProcessMgr():
         self.output_to_cam = output_method == "Virtual Camera" or output_method == "Both"
 
         if self.output_to_file:
-            self.videowriter = FFMPEG_VideoWriter(target_video, (width, height), fps, codec=roop.globals.video_encoder, crf=roop.globals.video_quality, audiofile=None)
+            writer_config = resolve_video_writer_config(roop.globals.video_encoder, roop.globals.video_quality)
+            self.videowriter = FFMPEG_VideoWriter(
+                target_video,
+                (width, height),
+                fps,
+                codec=writer_config["codec"],
+                crf=roop.globals.video_quality,
+                audiofile=None,
+                ffmpeg_params=writer_config["ffmpeg_params"],
+                quality_args=writer_config["quality_args"],
+            )
         if self.output_to_cam:
             self.streamwriter = StreamWriter((width, height), int(fps))
 

@@ -21,6 +21,7 @@ from roop.capturer import get_image_frame, get_video_frame_total
 from roop.ffmpeg_writer import FFMPEG_VideoWriter
 from roop.memory import describe_memory_plan, resolve_memory_plan, resolve_single_batch_workers
 from roop.progress_status import get_processing_status_line, publish_processing_progress, set_memory_status
+from roop.video_io import open_video_capture, resolve_video_writer_config
 
 try:
     from roop.StreamWriter import StreamWriter
@@ -184,7 +185,7 @@ def merge_stage_defaults(stage_state, defaults):
 
 def iter_video_chunk(video_path, frame_start, frame_end, prefetch_frames):
     q = queue.Queue(maxsize=max(2, prefetch_frames))
-    cap = cv2.VideoCapture(video_path)
+    cap = open_video_capture(video_path)
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_start)
 
     def producer():
@@ -985,36 +986,64 @@ class StagedBatchExecutor:
         compose_mgr.initialize(roop.globals.INPUT_FACESETS, roop.globals.TARGET_FACES, self.build_stage_options([]))
         fallback_mgr = None
         processed_frames = 0
-        cap = cv2.VideoCapture(entry.filename)
+        cap = open_video_capture(entry.filename)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
-        writer = FFMPEG_VideoWriter(str(intermediate_video), (width, height), fps, codec=roop.globals.video_encoder, crf=roop.globals.video_quality)
+        writer_config = resolve_video_writer_config(roop.globals.video_encoder, roop.globals.video_quality)
+        writer = FFMPEG_VideoWriter(
+            str(intermediate_video),
+            (width, height),
+            fps,
+            codec=writer_config["codec"],
+            crf=roop.globals.video_quality,
+            ffmpeg_params=writer_config["ffmpeg_params"],
+            quality_args=writer_config["quality_args"],
+        )
+
+        def load_pack_state(pack_data):
+            if pack_data is None:
+                return None, {}, {}, {}
+            frame_lookup = {frame_meta["frame_number"]: frame_meta for frame_meta in pack_data["frames"]}
+            input_cache = self.read_stage_cache_map(
+                self.get_stage_pack_path(mask_dir if self.mask_name else swap_dir, pack_data["start_sequence"], pack_data["end_sequence"])
+            )
+            enhance_cache = (
+                self.read_stage_cache_map(self.get_stage_pack_path(enhance_dir, pack_data["start_sequence"], pack_data["end_sequence"]))
+                if self.enhancer_name is not None
+                else {}
+            )
+            return pack_data["frames"][-1]["frame_number"], frame_lookup, input_cache, enhance_cache
+
         try:
-            for pack_data in self.iter_detect_packs(detect_dir):
-                frame_lookup = {frame_meta["frame_number"]: frame_meta for frame_meta in pack_data["frames"]}
-                input_cache = self.read_stage_cache_map(self.get_stage_pack_path(mask_dir if self.mask_name else swap_dir, pack_data["start_sequence"], pack_data["end_sequence"]))
-                enhance_cache = self.read_stage_cache_map(self.get_stage_pack_path(enhance_dir, pack_data["start_sequence"], pack_data["end_sequence"])) if self.enhancer_name is not None else {}
-                for frame_number, frame in iter_video_chunk(entry.filename, pack_data["frames"][0]["frame_number"], pack_data["frames"][-1]["frame_number"] + 1, memory_plan["prefetch_frames"]):
-                    frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
-                    if frame_meta["fallback"]:
-                        fallback_mgr = self.get_fallback_mgr()
-                        result = fallback_mgr.process_frame(frame)
-                    else:
-                        result = frame.copy()
-                        for task_meta in frame_meta["tasks"]:
-                            fake_frame = input_cache[task_meta["cache_key"]]
-                            enhanced_frame = enhance_cache.get(task_meta["cache_key"]) if self.enhancer_name is not None else None
-                            result = compose_mgr.compose_task(result, task_meta, fake_frame, enhanced_frame)
-                        fallback_mgr = self.fallback_mgr
-                        if fallback_mgr is not None and result is not None:
-                            fallback_mgr.last_swapped_frame = result.copy()
-                            fallback_mgr.num_frames_no_face = 0
-                    if result is not None:
-                        writer.write_frame(result)
-                    self.completed_units += 1
-                    processed_frames += 1
-                    self.update_progress("composite", detail="Streaming source decode + direct video encode", step_completed=processed_frames, step_total=frame_count, step_unit="frames")
+            pack_iter = iter(self.iter_detect_packs(detect_dir))
+            current_pack = next(pack_iter, None)
+            current_pack_end, frame_lookup, input_cache, enhance_cache = load_pack_state(current_pack)
+
+            for frame_number, frame in iter_video_chunk(entry.filename, entry.startframe, endframe, memory_plan["prefetch_frames"]):
+                while current_pack_end is not None and frame_number > current_pack_end:
+                    current_pack = next(pack_iter, None)
+                    current_pack_end, frame_lookup, input_cache, enhance_cache = load_pack_state(current_pack)
+
+                frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
+                if frame_meta["fallback"]:
+                    fallback_mgr = self.get_fallback_mgr()
+                    result = fallback_mgr.process_frame(frame)
+                else:
+                    result = frame.copy()
+                    for task_meta in frame_meta["tasks"]:
+                        fake_frame = input_cache[task_meta["cache_key"]]
+                        enhanced_frame = enhance_cache.get(task_meta["cache_key"]) if self.enhancer_name is not None else None
+                        result = compose_mgr.compose_task(result, task_meta, fake_frame, enhanced_frame)
+                    fallback_mgr = self.fallback_mgr
+                    if fallback_mgr is not None and result is not None:
+                        fallback_mgr.last_swapped_frame = result.copy()
+                        fallback_mgr.num_frames_no_face = 0
+                if result is not None:
+                    writer.write_frame(result)
+                self.completed_units += 1
+                processed_frames += 1
+                self.update_progress("composite", detail="Streaming source decode + direct video encode", step_completed=processed_frames, step_total=frame_count, step_unit="frames")
         finally:
             compose_mgr.release_resources()
             writer.close()
@@ -1306,14 +1335,23 @@ class StagedBatchExecutor:
         frame_lookup = {frame_meta["frame_number"]: frame_meta for frame_meta in chunk_meta["frames"]}
         input_cache = self.read_stage_cache_map(self.get_stage_cache_path(chunk_dir / ("mask" if self.mask_name else "swap")))
         enhance_cache = self.read_stage_cache_map(self.get_stage_cache_path(chunk_dir / "enhance")) if self.enhancer_name is not None else {}
-        cap = cv2.VideoCapture(entry.filename)
+        cap = open_video_capture(entry.filename)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
 
         output_to_file = self.output_method != "Virtual Camera"
         output_to_cam = self.output_method in ("Virtual Camera", "Both") and StreamWriter is not None
-        writer = FFMPEG_VideoWriter(str(chunk_video), (width, height), entry.fps or util.detect_fps(entry.filename), codec=roop.globals.video_encoder, crf=roop.globals.video_quality) if output_to_file else None
+        writer_config = resolve_video_writer_config(roop.globals.video_encoder, roop.globals.video_quality)
+        writer = FFMPEG_VideoWriter(
+            str(chunk_video),
+            (width, height),
+            entry.fps or util.detect_fps(entry.filename),
+            codec=writer_config["codec"],
+            crf=roop.globals.video_quality,
+            ffmpeg_params=writer_config["ffmpeg_params"],
+            quality_args=writer_config["quality_args"],
+        ) if output_to_file else None
         stream = StreamWriter((width, height), int(entry.fps or util.detect_fps(entry.filename))) if output_to_cam else None
         fallback_mgr = None
 
