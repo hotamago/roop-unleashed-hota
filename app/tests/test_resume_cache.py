@@ -249,3 +249,64 @@ def test_write_resume_payload_keeps_same_signature_path_between_temp_and_cached_
     second_resume_path = faceswap_tab.write_resume_payload(faceswap_tab.build_resume_payload({"output_method": "File"}))
 
     assert first_resume_path == second_resume_path
+
+
+def test_write_resume_payload_does_not_duplicate_source_assets_on_resume(tmp_path, monkeypatch):
+    resume_root = tmp_path / "resume_cache"
+    monkeypatch.setattr(faceswap_tab, "get_resume_cache_root", lambda: str(resume_root))
+    monkeypatch.setattr(faceswap_tab, "list_resume_cache_files", lambda: [], raising=False)
+    source_path = tmp_path / "source.png"
+    source_path.write_bytes(b"source-image")
+    source_face_set = FaceSet()
+    source_face_set.faces.append(make_face())
+    roop.globals.INPUT_FACESETS.append(source_face_set)
+    ui.globals.ui_input_face_refs.append({"type": "image_face", "path": str(source_path), "face_index": 0})
+    faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
+
+    first_resume_path = faceswap_tab.write_resume_payload(faceswap_tab.build_resume_payload({"output_method": "File"}))
+    reloaded = faceswap_tab.read_resume_payload(first_resume_path)
+    cached_source_path = reloaded["sources"][0]["resume_cached_path"]
+    ui.globals.ui_input_face_refs[:] = [{
+        "type": "image_face",
+        "path": str(cached_source_path),
+        "resume_cached_path": str(cached_source_path),
+        "face_index": 0,
+        "mask_offsets": list(faceswap_tab.default_mask_offsets()),
+    }]
+
+    second_resume_path = faceswap_tab.write_resume_payload(faceswap_tab.build_resume_payload({"output_method": "File"}))
+    source_assets = list((Path(str(first_resume_path).replace(".json", "_assets")) / "sources").glob("*"))
+
+    assert first_resume_path == second_resume_path
+    assert len(source_assets) == 1
+
+
+def test_write_resume_payload_does_not_duplicate_target_assets_on_resume(tmp_path, monkeypatch):
+    resume_root = tmp_path / "resume_cache"
+    gradio_root = tmp_path / "temp" / "gradio"
+    monkeypatch.setattr(faceswap_tab, "get_resume_cache_root", lambda: str(resume_root))
+    monkeypatch.setattr(faceswap_tab, "get_gradio_temp_root", lambda: gradio_root)
+    monkeypatch.setattr(faceswap_tab, "list_resume_cache_files", lambda: [], raising=False)
+    target_path = gradio_root / "upload" / "clip.mp4"
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(b"target-video")
+    faceswap_tab.list_files_process[:] = [ProcessEntry(str(target_path), 0, 100, 24.0)]
+    roop.globals.TARGET_FACES.append(SimpleNamespace())
+    ui.globals.ui_target_face_refs.append({"path": str(target_path), "frame_number": 12, "face_index": 0})
+
+    first_resume_path = faceswap_tab.write_resume_payload(faceswap_tab.build_resume_payload({"output_method": "File"}))
+    reloaded = faceswap_tab.read_resume_payload(first_resume_path)
+    cached_target_path = reloaded["targets"]["files"][0]["resume_cached_path"]
+    faceswap_tab.list_files_process[:] = [ProcessEntry(str(cached_target_path), 0, 100, 24.0)]
+    ui.globals.ui_target_face_refs[:] = [{
+        "path": str(cached_target_path),
+        "resume_cached_path": str(cached_target_path),
+        "frame_number": 12,
+        "face_index": 0,
+    }]
+
+    second_resume_path = faceswap_tab.write_resume_payload(faceswap_tab.build_resume_payload({"output_method": "File"}))
+    target_assets = list((Path(str(first_resume_path).replace(".json", "_assets")) / "targets").glob("*"))
+
+    assert first_resume_path == second_resume_path
+    assert len(target_assets) == 1

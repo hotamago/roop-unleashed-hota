@@ -170,7 +170,7 @@ def get_source_file_signature(source_ref):
     source_path = normalize_source_path(source_ref.get("path"), warn=False)
     if source_path is None:
         source_path = normalize_source_path(source_ref.get("resume_cached_path"), warn=False)
-    return get_stable_file_signature(source_path)
+    return hash_file_contents(source_path)
 
 
 def get_target_file_signature(target_ref, path_key):
@@ -345,6 +345,17 @@ def should_snapshot_target_path(target_path):
     return any(is_path_within_root(target_path, root) for root in candidate_roots)
 
 
+def reuse_existing_asset_path(asset_path, assets_root):
+    if asset_path is None:
+        return None
+    normalized_asset_path = os.path.normpath(os.path.abspath(asset_path))
+    if not os.path.isfile(normalized_asset_path):
+        return None
+    if not is_path_within_root(normalized_asset_path, assets_root):
+        return None
+    return normalized_asset_path
+
+
 def snapshot_resume_source_files(payload, resume_path):
     source_refs = payload.get("sources") or []
     if len(source_refs) < 1:
@@ -360,12 +371,16 @@ def snapshot_resume_source_files(payload, resume_path):
         cache_key = os.path.normcase(os.path.normpath(source_path))
         cached_path = copied_paths.get(cache_key)
         if cached_path is None:
-            stem, ext = os.path.splitext(os.path.basename(source_path))
-            safe_name = safe_filename_token(stem)
-            filename = f"{index:03d}_{safe_name}{ext.lower()}"
-            cached_path = os.path.join(assets_root, filename)
-            if os.path.normcase(os.path.normpath(source_path)) != os.path.normcase(os.path.normpath(cached_path)):
-                shutil.copy2(source_path, cached_path)
+            cached_path = reuse_existing_asset_path(source_ref.get("resume_cached_path"), assets_root)
+            if cached_path is None:
+                cached_path = reuse_existing_asset_path(source_path, assets_root)
+            if cached_path is None:
+                stem, ext = os.path.splitext(os.path.basename(source_path))
+                safe_name = safe_filename_token(stem)
+                filename = f"{index:03d}_{safe_name}{ext.lower()}"
+                cached_path = os.path.join(assets_root, filename)
+                if os.path.normcase(os.path.normpath(source_path)) != os.path.normcase(os.path.normpath(cached_path)):
+                    shutil.copy2(source_path, cached_path)
             copied_paths[cache_key] = cached_path
         source_ref["resume_cached_path"] = cached_path
     return payload
@@ -390,13 +405,17 @@ def snapshot_resume_target_files(payload, resume_path):
         cache_key = os.path.normcase(os.path.normpath(target_path))
         cached_path = copied_paths.get(cache_key)
         if cached_path is None:
-            stem, ext = os.path.splitext(os.path.basename(target_path))
-            safe_name = safe_filename_token(stem)
-            filename = f"{len(copied_paths):03d}_{safe_name}{ext.lower()}"
-            cached_path = os.path.join(assets_root, filename)
-            os.makedirs(assets_root, exist_ok=True)
-            if os.path.normcase(os.path.normpath(target_path)) != os.path.normcase(os.path.normpath(cached_path)):
-                shutil.copy2(target_path, cached_path)
+            cached_path = reuse_existing_asset_path(target_ref.get("resume_cached_path"), assets_root)
+            if cached_path is None:
+                cached_path = reuse_existing_asset_path(target_path, assets_root)
+            if cached_path is None:
+                stem, ext = os.path.splitext(os.path.basename(target_path))
+                safe_name = safe_filename_token(stem)
+                filename = f"{len(copied_paths):03d}_{safe_name}{ext.lower()}"
+                cached_path = os.path.join(assets_root, filename)
+                os.makedirs(assets_root, exist_ok=True)
+                if os.path.normcase(os.path.normpath(target_path)) != os.path.normcase(os.path.normpath(cached_path)):
+                    shutil.copy2(target_path, cached_path)
             copied_paths[cache_key] = cached_path
         target_ref["resume_cached_path"] = cached_path
     return payload
