@@ -8,11 +8,15 @@ ui_selected_enhancer = None
 ui_upscale = None
 ui_blend_ratio = None
 ui_input_thumbs = []
+ui_input_face_refs = []
 ui_target_thumbs = []
 ui_target_files = []
+ui_target_face_refs = []
 ui_camera_frame = None
 ui_memory_status = None
 ui_processing_info = None
+ui_resume_status = None
+ui_resume_last_path = None
 
 # Saveable faceswap session component refs
 ui_selected_face_detection = None

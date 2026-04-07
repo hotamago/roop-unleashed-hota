@@ -13,6 +13,8 @@ if str(APP_ROOT) not in sys.path:
 @pytest.fixture(autouse=True)
 def reset_runtime_globals(monkeypatch):
     import roop.globals
+    import ui.globals
+    import ui.tabs.faceswap_tab as faceswap_tab
 
     cfg = SimpleNamespace(
         detect_pack_frame_count=256,
@@ -34,3 +36,13 @@ def reset_runtime_globals(monkeypatch):
     monkeypatch.setattr(roop.globals, "runtime_processing_last_log_at", 0.0, raising=False)
     monkeypatch.setattr(roop.globals, "INPUT_FACESETS", [], raising=False)
     monkeypatch.setattr(roop.globals, "TARGET_FACES", [], raising=False)
+    monkeypatch.setattr(ui.globals, "ui_input_thumbs", [], raising=False)
+    monkeypatch.setattr(ui.globals, "ui_input_face_refs", [], raising=False)
+    monkeypatch.setattr(ui.globals, "ui_target_thumbs", [], raising=False)
+    monkeypatch.setattr(ui.globals, "ui_target_files", [], raising=False)
+    monkeypatch.setattr(ui.globals, "ui_target_face_refs", [], raising=False)
+    monkeypatch.setattr(ui.globals, "ui_resume_last_path", None, raising=False)
+    faceswap_tab.list_files_process.clear()
+    monkeypatch.setattr(faceswap_tab, "selected_preview_index", 0, raising=False)
+    monkeypatch.setattr(faceswap_tab, "SELECTED_INPUT_FACE_INDEX", 0, raising=False)
+    monkeypatch.setattr(faceswap_tab, "SELECTED_TARGET_FACE_INDEX", 0, raising=False)

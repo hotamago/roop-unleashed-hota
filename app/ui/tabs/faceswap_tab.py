@@ -1,5 +1,7 @@
 import os
+import json
 import shutil
+import time
 import gradio as gr
 import roop.utilities as util
 import roop.globals
@@ -32,6 +34,369 @@ swap_choices = ["First found", "All input faces", "All female", "All male", "All
 current_video_fps = 50
 
 manual_masking = False
+RESUME_CACHE_VERSION = 1
+
+
+def default_mask_offsets():
+    return [0, 0, 0, 0, 20.0, 10.0, 1.0, 1.0, 1.0, 1.0]
+
+
+def get_resume_cache_root():
+    resume_root = util.resolve_relative_path('../resume_cache')
+    os.makedirs(resume_root, exist_ok=True)
+    return resume_root
+
+
+def list_resume_cache_files():
+    resume_root = get_resume_cache_root()
+    files = [
+        os.path.join(resume_root, filename)
+        for filename in os.listdir(resume_root)
+        if filename.lower().endswith('.json') and os.path.isfile(os.path.join(resume_root, filename))
+    ]
+    files.sort(key=os.path.getmtime, reverse=True)
+    return files
+
+
+def get_resume_status_markdown(active_path=None, detail=None):
+    files = list_resume_cache_files()[:5]
+    lines = [
+        "**Resume Cache**",
+        f"- Folder: `{get_resume_cache_root()}`",
+    ]
+    if active_path:
+        lines.append(f"- Active file: `{active_path}`")
+    if detail:
+        lines.append(f"- Status: {detail}")
+    if files:
+        lines.append(f"- Recent files: {', '.join(os.path.basename(path) for path in files)}")
+    else:
+        lines.append("- Recent files: none")
+    return "\n".join(lines)
+
+
+def normalize_resume_path(raw_path):
+    if raw_path is None:
+        return None
+    clean_path = raw_path.strip().strip('"').strip("'")
+    if len(clean_path) < 1:
+        return None
+    if not os.path.isabs(clean_path):
+        cwd_candidate = os.path.abspath(os.path.join(os.getcwd(), clean_path))
+        cache_candidate = os.path.abspath(os.path.join(get_resume_cache_root(), clean_path))
+        clean_path = cwd_candidate if os.path.exists(cwd_candidate) else cache_candidate
+    return os.path.normpath(clean_path)
+
+
+def normalize_source_path(raw_path):
+    if raw_path is None:
+        return None
+    clean_path = raw_path.strip().strip('"').strip("'")
+    if len(clean_path) < 1:
+        return None
+    if not os.path.isabs(clean_path):
+        clean_path = os.path.abspath(os.path.join(os.getcwd(), clean_path))
+    clean_path = os.path.normpath(clean_path)
+    if not os.path.exists(clean_path):
+        gr.Warning(f"Source path not found: {clean_path}")
+        return None
+    if os.path.isdir(clean_path):
+        gr.Warning(f"Directories are not supported for sources: {clean_path}")
+        return None
+    if not (util.has_image_extension(clean_path) or clean_path.lower().endswith('fsz')):
+        gr.Warning(f"Unsupported source file: {clean_path}")
+        return None
+    return clean_path
+
+
+def safe_filename_token(name):
+    token = ''.join(char if char.isalnum() or char in ('-', '_') else '_' for char in name)
+    token = token.strip('_')
+    return token[:80] or "resume"
+
+
+def serialize_process_entries(entries):
+    payload = []
+    for entry in entries:
+        payload.append({
+            "filename": os.path.abspath(entry.filename),
+            "startframe": int(entry.startframe),
+            "endframe": int(entry.endframe),
+            "fps": float(entry.fps or 0),
+        })
+    return payload
+
+
+def snapshot_input_face_refs():
+    refs = []
+    if len(ui.globals.ui_input_face_refs) < len(roop.globals.INPUT_FACESETS):
+        raise ValueError("Current source inputs are missing resume metadata. Re-add the source files once before running.")
+    for index, face_set in enumerate(roop.globals.INPUT_FACESETS):
+        base_ref = dict(ui.globals.ui_input_face_refs[index])
+        if not base_ref.get("path"):
+            raise ValueError("A source input is missing its source path. Re-add the source files before running.")
+        mask_offsets = default_mask_offsets()
+        if getattr(face_set, "faces", None):
+            mask_offsets = list(getattr(face_set.faces[0], "mask_offsets", mask_offsets))
+        base_ref["path"] = os.path.abspath(base_ref["path"])
+        base_ref["mask_offsets"] = list(mask_offsets)
+        refs.append(base_ref)
+    return refs
+
+
+def snapshot_target_face_refs():
+    refs = []
+    if len(roop.globals.TARGET_FACES) > 0 and len(ui.globals.ui_target_face_refs) < len(roop.globals.TARGET_FACES):
+        raise ValueError("Current selected target faces are missing resume metadata. Re-add them from preview before running.")
+    for index in range(min(len(ui.globals.ui_target_face_refs), len(roop.globals.TARGET_FACES))):
+        base_ref = dict(ui.globals.ui_target_face_refs[index])
+        if not base_ref.get("path"):
+            continue
+        base_ref["path"] = os.path.abspath(base_ref["path"])
+        base_ref["frame_number"] = int(base_ref.get("frame_number", 0) or 0)
+        base_ref["face_index"] = int(base_ref.get("face_index", 0) or 0)
+        refs.append(base_ref)
+    return refs
+
+
+def build_resume_payload(settings):
+    if len(list_files_process) < 1:
+        raise ValueError("No target files are queued yet, so there is nothing to resume.")
+    payload = {
+        "version": RESUME_CACHE_VERSION,
+        "created_at": int(time.time()),
+        "sources": snapshot_input_face_refs(),
+        "targets": {
+            "files": serialize_process_entries(list_files_process),
+            "selected_faces": snapshot_target_face_refs(),
+            "selected_preview_index": int(selected_preview_index),
+        },
+        "selection": {
+            "input_face_index": int(SELECTED_INPUT_FACE_INDEX),
+            "target_face_index": int(SELECTED_TARGET_FACE_INDEX),
+        },
+        "settings": settings,
+    }
+    return payload
+
+
+def write_resume_payload(payload):
+    first_target = os.path.basename(list_files_process[0].filename) if list_files_process else "faceswap"
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"{timestamp}_{safe_filename_token(os.path.splitext(first_target)[0])}.json"
+    resume_path = os.path.join(get_resume_cache_root(), filename)
+    with open(resume_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=True)
+    ui.globals.ui_resume_last_path = resume_path
+    return resume_path
+
+
+def get_resume_settings_from_payload(payload):
+    settings = dict(payload.get("settings") or {})
+    return {
+        "output_method": settings.get("output_method", roop.globals.CFG.output_method),
+        "enhancer": settings.get("enhancer", roop.globals.CFG.selected_enhancer),
+        "detection": settings.get("detection", roop.globals.CFG.face_detection_mode),
+        "keep_frames": bool(settings.get("keep_frames", roop.globals.CFG.keep_frames)),
+        "wait_after_extraction": bool(settings.get("wait_after_extraction", roop.globals.CFG.wait_after_extraction)),
+        "skip_audio": bool(settings.get("skip_audio", roop.globals.CFG.skip_audio)),
+        "face_distance": float(settings.get("face_distance", roop.globals.CFG.max_face_distance)),
+        "blend_ratio": float(settings.get("blend_ratio", roop.globals.CFG.blend_ratio)),
+        "selected_mask_engine": settings.get("selected_mask_engine", roop.globals.CFG.mask_engine),
+        "clip_text": settings.get("clip_text", roop.globals.CFG.mask_clip_text),
+        "processing_method": settings.get("processing_method", roop.globals.CFG.video_swapping_method),
+        "no_face_action": settings.get("no_face_action", roop.globals.CFG.no_face_action),
+        "vr_mode": bool(settings.get("vr_mode", roop.globals.CFG.vr_mode)),
+        "autorotate": bool(settings.get("autorotate", roop.globals.CFG.autorotate_faces)),
+        "restore_original_mouth": bool(settings.get("restore_original_mouth", roop.globals.CFG.restore_original_mouth)),
+        "num_swap_steps": int(settings.get("num_swap_steps", roop.globals.CFG.num_swap_steps)),
+        "upsample": settings.get("upsample", roop.globals.CFG.subsample_upscale),
+    }
+
+
+def read_resume_payload(resume_path):
+    resolved_path = normalize_resume_path(resume_path)
+    if resolved_path is None or not os.path.isfile(resolved_path):
+        raise ValueError("Resume file not found.")
+    with open(resolved_path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if int(payload.get("version", 0) or 0) != RESUME_CACHE_VERSION:
+        raise ValueError("Unsupported resume file version.")
+    payload["__path__"] = resolved_path
+    return payload
+
+
+def clear_input_face_state():
+    global SELECTED_INPUT_FACE_INDEX
+    ui.globals.ui_input_thumbs.clear()
+    ui.globals.ui_input_face_refs.clear()
+    roop.globals.INPUT_FACESETS.clear()
+    SELECTED_INPUT_FACE_INDEX = 0
+
+
+def clear_target_face_state():
+    global SELECTED_TARGET_FACE_INDEX
+    ui.globals.ui_target_thumbs.clear()
+    ui.globals.ui_target_face_refs.clear()
+    roop.globals.TARGET_FACES.clear()
+    SELECTED_TARGET_FACE_INDEX = 0
+
+
+def append_faceset_source(source_path, source_ref):
+    unzipfolder = os.path.join(os.environ["TEMP"], 'faceset')
+    if os.path.isdir(unzipfolder):
+        for filename in os.listdir(unzipfolder):
+            os.remove(os.path.join(unzipfolder, filename))
+    else:
+        os.makedirs(unzipfolder)
+    util.mkdir_with_umask(unzipfolder)
+    util.unzip(source_path, unzipfolder)
+    is_first = True
+    face_set = FaceSet()
+    for filename in os.listdir(unzipfolder):
+        if not filename.endswith(".png"):
+            continue
+        full_path = os.path.join(unzipfolder, filename)
+        selection_faces_data = extract_face_images(full_path, (False, 0))
+        for face_data in selection_faces_data:
+            face = face_data[0]
+            face.mask_offsets = list(default_mask_offsets())
+            face_set.faces.append(face)
+            if is_first:
+                ui.globals.ui_input_thumbs.append(util.convert_to_gradio(face_data[1]))
+                is_first = False
+            face_set.ref_images.append(get_image_frame(full_path))
+    if len(face_set.faces) < 1:
+        raise ValueError(f"No faces found in faceset: {source_path}")
+    if len(face_set.faces) > 1:
+        face_set.AverageEmbeddings()
+    face_set.faces[0].mask_offsets = list(source_ref.get("mask_offsets", default_mask_offsets()))
+    roop.globals.INPUT_FACESETS.append(face_set)
+    ui.globals.ui_input_face_refs.append(dict(source_ref))
+
+
+def append_image_source(source_path, source_ref):
+    selection_faces_data = extract_face_images(source_path, (False, 0))
+    face_index = int(source_ref.get("face_index", 0) or 0)
+    if face_index < 0 or face_index >= len(selection_faces_data):
+        raise ValueError(f"Source face index {face_index} is out of range for {source_path}")
+    face_set = FaceSet()
+    face = selection_faces_data[face_index][0]
+    face.mask_offsets = list(source_ref.get("mask_offsets", default_mask_offsets()))
+    face_set.faces.append(face)
+    roop.globals.INPUT_FACESETS.append(face_set)
+    ui.globals.ui_input_thumbs.append(util.convert_to_gradio(selection_faces_data[face_index][1]))
+    ui.globals.ui_input_face_refs.append(dict(source_ref))
+
+
+def restore_input_faces_from_resume(source_refs):
+    clear_input_face_state()
+    for source_ref in source_refs:
+        source_path = normalize_source_path(source_ref.get("path"))
+        if source_path is None:
+            continue
+        restored_ref = dict(source_ref)
+        restored_ref["path"] = source_path
+        if restored_ref.get("type") == "faceset":
+            append_faceset_source(source_path, restored_ref)
+        else:
+            append_image_source(source_path, restored_ref)
+    if len(roop.globals.INPUT_FACESETS) < 1:
+        raise ValueError("The resume file did not restore any source faces.")
+
+
+def append_target_face_from_resume(face_ref):
+    target_path = normalize_target_path(face_ref.get("path"))
+    if target_path is None:
+        return
+    frame_number = int(face_ref.get("frame_number", 0) or 0)
+    is_video = util.is_video(target_path) or target_path.lower().endswith('gif')
+    if is_video and frame_number <= 0:
+        frame_number = 1
+    faces_data = extract_face_images(target_path, (is_video, frame_number))
+    face_index = int(face_ref.get("face_index", 0) or 0)
+    if face_index < 0 or face_index >= len(faces_data):
+        raise ValueError(f"Target face index {face_index} is out of range for {target_path}")
+    roop.globals.TARGET_FACES.append(faces_data[face_index][0])
+    ui.globals.ui_target_thumbs.append(util.convert_to_gradio(faces_data[face_index][1]))
+    restored_ref = dict(face_ref)
+    restored_ref["path"] = target_path
+    restored_ref["frame_number"] = frame_number
+    restored_ref["face_index"] = face_index
+    ui.globals.ui_target_face_refs.append(restored_ref)
+
+
+def restore_target_faces_from_resume(face_refs):
+    clear_target_face_state()
+    for face_ref in face_refs:
+        append_target_face_from_resume(face_ref)
+
+
+def restore_process_entries(process_entries):
+    global list_files_process
+
+    list_files_process.clear()
+    target_paths = []
+    for entry_data in process_entries:
+        filename = normalize_target_path(entry_data.get("filename"))
+        if filename is None:
+            continue
+        entry = ProcessEntry(
+            filename,
+            int(entry_data.get("startframe", 0) or 0),
+            int(entry_data.get("endframe", 0) or 0),
+            float(entry_data.get("fps", 0) or 0),
+        )
+        list_files_process.append(entry)
+        target_paths.append(filename)
+    ui.globals.ui_target_files = list(target_paths)
+    if len(list_files_process) < 1:
+        raise ValueError("The resume file did not restore any target files.")
+    return target_paths
+
+
+def get_selected_input_mask_values(face_index=None):
+    if face_index is None:
+        face_index = SELECTED_INPUT_FACE_INDEX
+    offsets = list(default_mask_offsets())
+    if 0 <= face_index < len(roop.globals.INPUT_FACESETS):
+        face = roop.globals.INPUT_FACESETS[face_index].faces[0]
+        offsets = list(getattr(face, "mask_offsets", offsets))
+    while len(offsets) < 10:
+        offsets.append(1.0)
+    return tuple(offsets[:10])
+
+
+def load_resume_into_runtime(resume_path):
+    global selected_preview_index, SELECTED_INPUT_FACE_INDEX, SELECTED_TARGET_FACE_INDEX
+
+    payload = read_resume_payload(resume_path)
+    restore_input_faces_from_resume(payload.get("sources") or [])
+    target_paths = restore_process_entries((payload.get("targets") or {}).get("files") or [])
+    restore_target_faces_from_resume((payload.get("targets") or {}).get("selected_faces") or [])
+
+    settings = get_resume_settings_from_payload(payload)
+    selected_preview_index = int((payload.get("targets") or {}).get("selected_preview_index", 0) or 0)
+    selected_preview_index = max(0, min(selected_preview_index, len(target_paths) - 1))
+    SELECTED_INPUT_FACE_INDEX = int((payload.get("selection") or {}).get("input_face_index", 0) or 0)
+    SELECTED_TARGET_FACE_INDEX = int((payload.get("selection") or {}).get("target_face_index", 0) or 0)
+    SELECTED_INPUT_FACE_INDEX = max(0, min(SELECTED_INPUT_FACE_INDEX, len(roop.globals.INPUT_FACESETS) - 1))
+    if len(roop.globals.TARGET_FACES) > 0:
+        SELECTED_TARGET_FACE_INDEX = max(0, min(SELECTED_TARGET_FACE_INDEX, len(roop.globals.TARGET_FACES) - 1))
+    else:
+        SELECTED_TARGET_FACE_INDEX = 0
+    roop.globals.target_path = target_paths[selected_preview_index] if target_paths else None
+    slider, frame_text = on_destfiles_selected(None)
+    ui.globals.ui_resume_last_path = payload["__path__"]
+    summary = f"Loaded {len(roop.globals.INPUT_FACESETS)} source face(s), {len(target_paths)} target file(s), {len(roop.globals.TARGET_FACES)} selected target face(s)"
+    return {
+        "payload": payload,
+        "settings": settings,
+        "target_paths": target_paths,
+        "slider": slider,
+        "frame_text": frame_text,
+        "resume_status": get_resume_status_markdown(payload["__path__"], summary),
+    }
 
 
 def extract_target_path(item):
@@ -118,6 +483,16 @@ def faceswap_tab():
                 placeholder="One file path per line. Relative paths resolve from ./app",
             )
             bt_add_target_paths = gr.Button("Add Target Paths", variant='secondary')
+        with gr.Row(variant='panel'):
+            with gr.Column(scale=3):
+                resume_file_input = gr.Textbox(
+                    label="Resume File Path",
+                    lines=1,
+                    placeholder="Paste a JSON file from ./app/resume_cache and click Resume From File",
+                )
+            with gr.Column(scale=1):
+                bt_resume_from_file = gr.Button("Resume From File", variant='secondary')
+                bt_open_resume_cache = gr.Button("Open Resume Cache", size='sm')
         with gr.Row(variant='panel'):
             with gr.Column(scale=2):
                 with gr.Row():
@@ -256,6 +631,8 @@ def faceswap_tab():
         with gr.Row(variant='panel'):
             processing_info = gr.Markdown(get_processing_status_markdown())
             processing_timer = gr.Timer(1.0, active=True)
+        with gr.Row(variant='panel'):
+            resume_status = gr.Markdown(get_resume_status_markdown())
 
     # Store saveable component refs in ui.globals for cross-tab access (Save/Load session)
     ui.globals.ui_selected_face_detection = selected_face_detection
@@ -284,6 +661,7 @@ def faceswap_tab():
     ui.globals.ui_mouth_left_scale = mouth_left_scale
     ui.globals.ui_mouth_right_scale = mouth_right_scale
     ui.globals.ui_processing_info = processing_info
+    ui.globals.ui_resume_status = resume_status
 
     previewinputs = [preview_frame_num, bt_destfiles, fake_preview, ui.globals.ui_selected_enhancer, selected_face_detection,
                         max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text, no_face_action, vr_mode, autorotate, maskimage, chk_showmaskoffsets, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale]
@@ -331,9 +709,17 @@ def faceswap_tab():
     start_event = bt_start.click(fn=start_swap,
         inputs=[output_method, ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
                     roop.globals.skip_audio, max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text,video_swapping_method, no_face_action, vr_mode, autorotate, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale, maskimage],
-        outputs=[bt_start, bt_stop, processing_info], show_progress='full')
+        outputs=[bt_start, bt_stop, processing_info, resume_status], show_progress='full')
 
-    bt_stop.click(fn=stop_swap, cancels=[start_event], outputs=[bt_start, bt_stop, processing_info], queue=False)
+    resume_event = bt_resume_from_file.click(
+        fn=resume_swap_from_file,
+        inputs=[resume_file_input],
+        outputs=[bt_start, bt_stop, processing_info, resume_status],
+        show_progress='full'
+    )
+    bt_open_resume_cache.click(fn=lambda: util.open_folder(get_resume_cache_root()), outputs=[], queue=False)
+
+    bt_stop.click(fn=stop_swap, cancels=[start_event, resume_event], outputs=[bt_start, bt_stop, processing_info, resume_status], queue=False)
     processing_timer.tick(fn=get_runtime_processing_info, outputs=[processing_info], show_progress='hidden', queue=False)
 
     bt_refresh_preview.click(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)            
@@ -387,6 +773,8 @@ def set_mask_offset(index, mask_offset):
             offs.append(1.0)
         offs[index] = mask_offset
         roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets = offs
+        if len(ui.globals.ui_input_face_refs) > SELECTED_INPUT_FACE_INDEX:
+            ui.globals.ui_input_face_refs[SELECTED_INPUT_FACE_INDEX]["mask_offsets"] = list(offs)
 
 def on_mask_engine_changed(mask_engine):
     if mask_engine == "Clip2Seg":
@@ -408,52 +796,36 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
         return ui.globals.ui_input_thumbs, None
 
     for f in srcfiles:    
-        source_path = f.name
+        source_path = normalize_source_path(f.name)
+        if source_path is None:
+            continue
         if source_path.lower().endswith('fsz'):
             progress(0, desc="Retrieving faces from Faceset File")      
-            unzipfolder = os.path.join(os.environ["TEMP"], 'faceset')
-            if os.path.isdir(unzipfolder):
-                files = os.listdir(unzipfolder)
-                for file in files:
-                    os.remove(os.path.join(unzipfolder, file))
-            else:
-                os.makedirs(unzipfolder)
-            util.mkdir_with_umask(unzipfolder)
-            util.unzip(source_path, unzipfolder)
-            is_first = True
-            face_set = FaceSet()
-            for file in os.listdir(unzipfolder):
-                if file.endswith(".png"):
-                    filename = os.path.join(unzipfolder,file)
-                    progress(0, desc="Extracting faceset")      
-                    selection_faces_data = extract_face_images(filename,  (False, 0))
-                    for f in selection_faces_data:
-                        face = f[0]
-                        face.mask_offsets = [0,0,0,0,20.0,10.0,1.0,1.0,1.0,1.0]
-                        face_set.faces.append(face)
-                        if is_first: 
-                            image = util.convert_to_gradio(f[1])
-                            ui.globals.ui_input_thumbs.append(image)
-                            is_first = False
-                        face_set.ref_images.append(get_image_frame(filename))
-            if len(face_set.faces) > 0:
-                if len(face_set.faces) > 1:
-                    face_set.AverageEmbeddings()
-                roop.globals.INPUT_FACESETS.append(face_set)
+            append_faceset_source(source_path, {
+                "type": "faceset",
+                "path": source_path,
+                "mask_offsets": list(default_mask_offsets()),
+            })
                                         
         elif util.has_image_extension(source_path):
             progress(0, desc="Retrieving faces from image")      
             roop.globals.source_path = source_path
             selection_faces_data = extract_face_images(roop.globals.source_path,  (False, 0))
             progress(0.5, desc="Retrieving faces from image")
-            for f in selection_faces_data:
+            for face_index, face_data in enumerate(selection_faces_data):
                 face_set = FaceSet()
-                face = f[0]
-                face.mask_offsets = [0,0,0,0,20.0,10.0,1.0,1.0,1.0,1.0]
+                face = face_data[0]
+                face.mask_offsets = list(default_mask_offsets())
                 face_set.faces.append(face)
-                image = util.convert_to_gradio(f[1])
+                image = util.convert_to_gradio(face_data[1])
                 ui.globals.ui_input_thumbs.append(image)
                 roop.globals.INPUT_FACESETS.append(face_set)
+                ui.globals.ui_input_face_refs.append({
+                    "type": "image_face",
+                    "path": source_path,
+                    "face_index": face_index,
+                    "mask_offsets": list(default_mask_offsets()),
+                })
                 
     progress(1.0)
     if len(ui.globals.ui_input_thumbs) >= 6:
@@ -476,6 +848,9 @@ def remove_selected_input_face():
     if len(roop.globals.INPUT_FACESETS) > SELECTED_INPUT_FACE_INDEX:
         f = roop.globals.INPUT_FACESETS.pop(SELECTED_INPUT_FACE_INDEX)
         del f
+    if len(ui.globals.ui_input_face_refs) > SELECTED_INPUT_FACE_INDEX:
+        f = ui.globals.ui_input_face_refs.pop(SELECTED_INPUT_FACE_INDEX)
+        del f
     if len(ui.globals.ui_input_thumbs) > SELECTED_INPUT_FACE_INDEX:
         f = ui.globals.ui_input_thumbs.pop(SELECTED_INPUT_FACE_INDEX)
         del f
@@ -496,6 +871,9 @@ def move_selected_input(button_text):
     
     f = roop.globals.INPUT_FACESETS.pop(SELECTED_INPUT_FACE_INDEX)
     roop.globals.INPUT_FACESETS.insert(SELECTED_INPUT_FACE_INDEX + offset, f)
+    if len(ui.globals.ui_input_face_refs) > SELECTED_INPUT_FACE_INDEX:
+        f = ui.globals.ui_input_face_refs.pop(SELECTED_INPUT_FACE_INDEX)
+        ui.globals.ui_input_face_refs.insert(SELECTED_INPUT_FACE_INDEX + offset, f)
     f = ui.globals.ui_input_thumbs.pop(SELECTED_INPUT_FACE_INDEX)
     ui.globals.ui_input_thumbs.insert(SELECTED_INPUT_FACE_INDEX + offset, f)
     return ui.globals.ui_input_thumbs
@@ -515,6 +893,9 @@ def move_selected_target(button_text):
     
     f = roop.globals.TARGET_FACES.pop(SELECTED_TARGET_FACE_INDEX)
     roop.globals.TARGET_FACES.insert(SELECTED_TARGET_FACE_INDEX + offset, f)
+    if len(ui.globals.ui_target_face_refs) > SELECTED_TARGET_FACE_INDEX:
+        f = ui.globals.ui_target_face_refs.pop(SELECTED_TARGET_FACE_INDEX)
+        ui.globals.ui_target_face_refs.insert(SELECTED_TARGET_FACE_INDEX + offset, f)
     f = ui.globals.ui_target_thumbs.pop(SELECTED_TARGET_FACE_INDEX)
     ui.globals.ui_target_thumbs.insert(SELECTED_TARGET_FACE_INDEX + offset, f)
     return ui.globals.ui_target_thumbs
@@ -530,6 +911,9 @@ def on_select_target_face(evt: gr.SelectData):
 def remove_selected_target_face():
     if len(ui.globals.ui_target_thumbs) > SELECTED_TARGET_FACE_INDEX:
         f = roop.globals.TARGET_FACES.pop(SELECTED_TARGET_FACE_INDEX)
+        del f
+    if len(ui.globals.ui_target_face_refs) > SELECTED_TARGET_FACE_INDEX:
+        f = ui.globals.ui_target_face_refs.pop(SELECTED_TARGET_FACE_INDEX)
         del f
     if len(ui.globals.ui_target_thumbs) > SELECTED_TARGET_FACE_INDEX:
         f = ui.globals.ui_target_thumbs.pop(SELECTED_TARGET_FACE_INDEX)
@@ -558,9 +942,14 @@ def on_use_face_from_selected(files, frame_num):
         roop.globals.target_path = None
         return ui.globals.ui_target_thumbs, gr.Dropdown(visible=True)
 
-    for f in faces_data:
-        roop.globals.TARGET_FACES.append(f[0])
-        ui.globals.ui_target_thumbs.append(util.convert_to_gradio(f[1]))
+    for face_index, face_data in enumerate(faces_data):
+        roop.globals.TARGET_FACES.append(face_data[0])
+        ui.globals.ui_target_thumbs.append(util.convert_to_gradio(face_data[1]))
+        ui.globals.ui_target_face_refs.append({
+            "path": roop.globals.target_path,
+            "frame_number": int(frame_num) if (util.is_video(roop.globals.target_path) or roop.globals.target_path.lower().endswith(('gif'))) else 0,
+            "face_index": face_index,
+        })
 
     return ui.globals.ui_target_thumbs, gr.Dropdown(value='Selected face')
 
@@ -714,14 +1103,12 @@ def on_preview_mask(frame_num, files, clip_text, mask_engine):
 
 
 def on_clear_input_faces():
-    ui.globals.ui_input_thumbs.clear()
-    roop.globals.INPUT_FACESETS.clear()
+    clear_input_face_state()
     return ui.globals.ui_input_thumbs
 
 def on_clear_destfiles():
     global selected_preview_index
-    roop.globals.TARGET_FACES.clear()
-    ui.globals.ui_target_thumbs.clear()
+    clear_target_face_state()
     ui.globals.ui_target_files = []
     list_files_process.clear()
     selected_preview_index = 0
@@ -748,6 +1135,43 @@ def translate_swap_mode(dropdown_text):
     return "all"
 
 
+def create_resume_settings_snapshot(output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
+                                    selected_mask_engine, clip_text, processing_method, no_face_action, vr_mode, autorotate,
+                                    restore_original_mouth, num_swap_steps, upsample):
+    return {
+        "output_method": output_method,
+        "enhancer": enhancer,
+        "detection": detection,
+        "keep_frames": bool(keep_frames),
+        "wait_after_extraction": bool(wait_after_extraction),
+        "skip_audio": bool(skip_audio),
+        "face_distance": float(face_distance),
+        "blend_ratio": float(blend_ratio),
+        "selected_mask_engine": selected_mask_engine,
+        "clip_text": clip_text,
+        "processing_method": processing_method,
+        "no_face_action": no_face_action,
+        "vr_mode": bool(vr_mode),
+        "autorotate": bool(autorotate),
+        "restore_original_mouth": bool(restore_original_mouth),
+        "num_swap_steps": int(num_swap_steps),
+        "upsample": upsample,
+    }
+
+
+def save_resume_snapshot_for_run(output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
+                                 selected_mask_engine, clip_text, processing_method, no_face_action, vr_mode, autorotate,
+                                 restore_original_mouth, num_swap_steps, upsample):
+    settings = create_resume_settings_snapshot(
+        output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
+        selected_mask_engine, clip_text, processing_method, no_face_action, vr_mode, autorotate,
+        restore_original_mouth, num_swap_steps, upsample
+    )
+    payload = build_resume_payload(settings)
+    resume_path = write_resume_payload(payload)
+    return resume_path, get_resume_status_markdown(resume_path, "Saved resume config for this run")
+
+
 def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
                 selected_mask_engine, clip_text, processing_method, no_face_action, vr_mode, autorotate, restore_original_mouth, num_swap_steps, upsample, imagemask, progress=gr.Progress()):
     from ui.main import prepare_environment
@@ -755,8 +1179,9 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     from roop.memory import describe_memory_plan, resolve_memory_plan
     global is_processing, list_files_process
 
+    resume_status = get_resume_status_markdown(ui.globals.ui_resume_last_path)
     if list_files_process is None or len(list_files_process) <= 0:
-        yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown()
+        yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown(), resume_status
         return
     
     if roop.globals.CFG.clear_output:
@@ -785,12 +1210,22 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     if roop.globals.face_swap_mode == 'selected':
         if len(roop.globals.TARGET_FACES) < 1:
             gr.Error('No Target Face selected!')
-            yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown()
+            yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown(), resume_status
             return
 
     is_processing = True
     start_processing_status("Preparing faceswap job", total_files=len(list_files_process))
-    yield gr.Button(variant="secondary", interactive=False), gr.Button(variant="primary", interactive=True), get_processing_status_markdown()
+    try:
+        resume_path, resume_status = save_resume_snapshot_for_run(
+            output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
+            selected_mask_engine, clip_text, processing_method, no_face_action, vr_mode, autorotate,
+            restore_original_mouth, num_swap_steps, upsample
+        )
+        gr.Info(f"Resume config saved: {resume_path}")
+    except Exception as exc:
+        resume_status = get_resume_status_markdown(ui.globals.ui_resume_last_path, f"Resume config was not saved: {exc}")
+        gr.Warning(f"Resume config was not saved for this run: {exc}")
+    yield gr.Button(variant="secondary", interactive=False), gr.Button(variant="primary", interactive=True), get_processing_status_markdown(), resume_status
     roop.globals.execution_threads = roop.globals.CFG.max_threads
     roop.globals.video_encoder = roop.globals.CFG.output_video_codec
     roop.globals.video_quality = roop.globals.CFG.video_quality
@@ -802,14 +1237,49 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
 
     batch_process_regular(output_method, list_files_process, mask_engine, clip_text, processing_method, imagemask, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX)
     is_processing = False
-    yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown()
+    yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown(), resume_status
+
+
+def resume_swap_from_file(resume_path, progress=gr.Progress()):
+    try:
+        resume_state = load_resume_into_runtime(resume_path)
+        settings = resume_state["settings"]
+        gr.Info(f"Loaded resume config: {resume_state['payload']['__path__']}")
+    except Exception as exc:
+        status = get_resume_status_markdown(normalize_resume_path(resume_path), str(exc))
+        gr.Warning(str(exc))
+        yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown(), status
+        return
+
+    for update in start_swap(
+        settings["output_method"],
+        settings["enhancer"],
+        settings["detection"],
+        settings["keep_frames"],
+        settings["wait_after_extraction"],
+        settings["skip_audio"],
+        settings["face_distance"],
+        settings["blend_ratio"],
+        settings["selected_mask_engine"],
+        settings["clip_text"],
+        settings["processing_method"],
+        settings["no_face_action"],
+        settings["vr_mode"],
+        settings["autorotate"],
+        settings["restore_original_mouth"],
+        settings["num_swap_steps"],
+        settings["upsample"],
+        None,
+        progress,
+    ):
+        yield update
 
 
 def stop_swap():
     roop.globals.processing = False
     set_processing_message('Stopping... waiting for workers to finish', status='stopping', detail='The current stage will stop as soon as workers drain', force_log=True)
     gr.Info('Aborting processing - please wait for the remaining threads to be stopped')
-    return gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown()
+    return gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown(), get_resume_status_markdown(ui.globals.ui_resume_last_path)
 
 
 def on_destfiles_changed(destfiles):
