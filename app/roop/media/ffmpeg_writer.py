@@ -71,7 +71,8 @@ class FFMPEG_VideoWriter:
 
     def __init__(self, filename, size, fps, codec="libx265", crf=14, audiofile=None,
                  preset="medium", bitrate=None,
-                 logfile=None, threads=None, ffmpeg_params=None, quality_args=None):
+                 logfile=None, threads=None, ffmpeg_params=None, quality_args=None,
+                 output_pix_fmt="yuv420p", video_filter="colorspace=bt709:iall=bt601-6-625:fast=1"):
 
         if logfile is None:
             logfile = sp.PIPE
@@ -116,14 +117,19 @@ class FFMPEG_VideoWriter:
                 '-b', bitrate
             ])
 
-        # scale to a resolution divisible by 2 if not even
-        cmd.extend(['-vf', f'scale={w}:{h}' if w != size[0] or h != size[1] else 'colorspace=bt709:iall=bt601-6-625:fast=1'])
+        filters = []
+        if w != size[0] or h != size[1]:
+            filters.append(f'scale={w}:{h}')
+        if video_filter:
+            filters.append(video_filter)
+        if filters:
+            cmd.extend(['-vf', ','.join(filters)])
 
         if threads is not None:
             cmd.extend(["-threads", str(threads)])
 
         cmd.extend([
-            '-pix_fmt', 'yuv420p',
+            '-pix_fmt', output_pix_fmt,
 
         ])
         cmd.extend([
