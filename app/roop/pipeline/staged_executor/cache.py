@@ -14,7 +14,7 @@ from roop.utils.cache_paths import get_jobs_root as get_persistent_jobs_root
 from .video_cache import VideoStageCache, normalize_cache_image
 
 
-PIPELINE_VERSION = 11
+PIPELINE_VERSION = 12
 DETECT_PACK_FRAME_COUNT = 256
 _STAGE_CACHE = VideoStageCache()
 
@@ -124,6 +124,9 @@ def get_staged_cache_options_snapshot(options):
     return {
         "processors": sorted(options.processors.keys()),
         "face_swap_model": getattr(options, "face_swap_model", "inswapper_128"),
+        "face_detector_model": getattr(getattr(roop.config.globals, "CFG", None), "face_detector_model", "insightface"),
+        "face_landmarker_model": getattr(getattr(roop.config.globals, "CFG", None), "face_landmarker_model", "insightface_2d106"),
+        "face_masker_model": getattr(getattr(roop.config.globals, "CFG", None), "face_masker_model", "legacy_xseg"),
         "face_distance_threshold": options.face_distance_threshold,
         "blend_ratio": options.blend_ratio,
         "swap_mode": options.swap_mode,

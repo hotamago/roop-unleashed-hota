@@ -32,6 +32,11 @@ import roop.media.ffmpeg_ops as ffmpeg
 import ui.main as main
 from roop.config.settings import Settings
 from roop.face import extract_face_images
+from roop.face_analytics_models import (
+    ensure_face_detector_model_downloaded,
+    ensure_face_landmarker_model_downloaded,
+    ensure_face_masker_model_downloaded,
+)
 from roop.pipeline.entry import ProcessEntry
 from roop.pipeline.batch_executor import ProcessMgr
 from roop.pipeline.options import ProcessOptions
@@ -109,6 +114,9 @@ def pre_check() -> bool:
     
     download_directory_path = util.resolve_relative_path('../models')
     ensure_face_swap_model_downloaded(getattr(roop.config.globals.CFG, "face_swap_model", None))
+    ensure_face_detector_model_downloaded(getattr(roop.config.globals.CFG, "face_detector_model", None))
+    ensure_face_landmarker_model_downloaded(getattr(roop.config.globals.CFG, "face_landmarker_model", None))
+    ensure_face_masker_model_downloaded(getattr(roop.config.globals.CFG, "face_masker_model", None))
     util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/GFPGANv1.4.onnx'])
     util.conditional_download(download_directory_path, ['https://github.com/csxmli2016/DMDNet/releases/download/v1/DMDNet.pth'])
     util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/GPEN-BFR-512.onnx'])

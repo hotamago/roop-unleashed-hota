@@ -6,6 +6,11 @@ import gradio as gr
 import roop.config.globals
 import roop.config as roop_config
 import roop.utils as util
+from roop.face_analytics_models import (
+    get_face_detector_model_key,
+    get_face_landmarker_model_key,
+    get_face_masker_model_key,
+)
 from roop.face_swap_models import (
     get_face_swap_model_key,
     get_face_swap_upscale_choices,
@@ -509,7 +514,9 @@ def show_msg(msg: str):
 
 
 _SESSION_CFG_KEYS = [
-    'face_detection_mode', 'num_swap_steps', 'selected_enhancer', 'face_swap_model', 'max_face_distance',
+    'face_detection_mode', 'num_swap_steps', 'selected_enhancer',
+    'face_detector_model', 'face_landmarker_model', 'face_masker_model',
+    'face_swap_model', 'max_face_distance',
     'subsample_upscale', 'blend_ratio', 'video_swapping_method', 'no_face_action',
     'vr_mode', 'autorotate_faces', 'skip_audio', 'keep_frames', 'wait_after_extraction',
     'output_method', 'mask_engine', 'mask_clip_text', 'show_mask_offsets',
@@ -523,6 +530,9 @@ def _session_components():
         ui.globals.ui_selected_face_detection,
         ui.globals.ui_num_swap_steps,
         ui.globals.ui_selected_enhancer,
+        ui.globals.ui_face_detector_model,
+        ui.globals.ui_face_landmarker_model,
+        ui.globals.ui_face_masker_model,
         ui.globals.ui_face_swap_model,
         ui.globals.ui_max_face_distance,
         ui.globals.ui_upscale,
@@ -552,6 +562,9 @@ def save_session(*values):
     cfg = roop.config.globals.CFG
     for key, val in zip(_SESSION_CFG_KEYS, values):
         setattr(cfg, key, val)
+    cfg.face_detector_model = get_face_detector_model_key(getattr(cfg, "face_detector_model", None))
+    cfg.face_landmarker_model = get_face_landmarker_model_key(getattr(cfg, "face_landmarker_model", None))
+    cfg.face_masker_model = get_face_masker_model_key(getattr(cfg, "face_masker_model", None))
     cfg.face_swap_model = get_face_swap_model_key(getattr(cfg, "face_swap_model", None))
     cfg.subsample_upscale = normalize_face_swap_upscale(cfg.subsample_upscale, cfg.face_swap_model)
     roop.config.globals.subsample_size = parse_face_swap_upscale_size(cfg.subsample_upscale, cfg.face_swap_model)
@@ -560,11 +573,17 @@ def save_session(*values):
 
 
 def load_session():
+    from roop.face import release_face_analyser
+
     roop.config.globals.CFG.load()
     cfg = roop.config.globals.CFG
+    cfg.face_detector_model = get_face_detector_model_key(getattr(cfg, "face_detector_model", None))
+    cfg.face_landmarker_model = get_face_landmarker_model_key(getattr(cfg, "face_landmarker_model", None))
+    cfg.face_masker_model = get_face_masker_model_key(getattr(cfg, "face_masker_model", None))
     cfg.face_swap_model = get_face_swap_model_key(getattr(cfg, "face_swap_model", None))
     cfg.subsample_upscale = normalize_face_swap_upscale(cfg.subsample_upscale, cfg.face_swap_model)
     roop.config.globals.subsample_size = parse_face_swap_upscale_size(cfg.subsample_upscale, cfg.face_swap_model)
+    release_face_analyser()
 
     loaded_values = []
     for key in _SESSION_CFG_KEYS:

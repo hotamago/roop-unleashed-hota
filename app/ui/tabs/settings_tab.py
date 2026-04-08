@@ -3,6 +3,17 @@ import os
 import gradio as gr
 import roop.config.globals
 import ui.globals
+from roop.face_analytics_models import (
+    get_face_detector_model_choices,
+    get_face_detector_model_hint,
+    get_face_detector_model_key,
+    get_face_landmarker_model_choices,
+    get_face_landmarker_model_hint,
+    get_face_landmarker_model_key,
+    get_face_masker_model_choices,
+    get_face_masker_model_hint,
+    get_face_masker_model_key,
+)
 from roop.face_swap_models import (
     get_face_swap_model_choices,
     get_face_swap_model_hint,
@@ -52,6 +63,27 @@ def on_face_swap_model_changed(selected_model, current_upscale):
         gr.Markdown(value=get_face_swap_model_hint(model_key)),
     )
 
+
+def on_face_analytics_model_changed(new_value, attribname):
+    if attribname == "face_detector_model":
+        normalized_value = get_face_detector_model_key(new_value)
+        hint = get_face_detector_model_hint(normalized_value)
+    elif attribname == "face_landmarker_model":
+        normalized_value = get_face_landmarker_model_key(new_value)
+        hint = get_face_landmarker_model_hint(normalized_value)
+    else:
+        normalized_value = get_face_masker_model_key(new_value)
+        hint = get_face_masker_model_hint(normalized_value)
+
+    setattr(roop.config.globals.CFG, attribname, normalized_value)
+
+    if attribname in ("face_detector_model", "face_landmarker_model"):
+        from roop.face import release_face_analyser
+
+        release_face_analyser()
+
+    return update_memory_status(), gr.Markdown(value=hint)
+
 def settings_tab():
     from roop.core.providers import suggest_execution_providers
     global providerlist
@@ -80,6 +112,39 @@ def settings_tab():
                 settings_controls.append(gr.Dropdown(providerlist, label="Provider", value=roop.config.globals.CFG.provider, elem_id='provider', interactive=True))
                 chk_det_size = gr.Checkbox(label="Use default Det-Size", value=True, elem_id='default_det_size', interactive=True)
                 settings_controls.append(gr.Checkbox(label="Force CPU for Face Analyser", value=roop.config.globals.CFG.force_cpu, elem_id='force_cpu', interactive=True))
+                ui.globals.ui_face_detector_model = gr.Dropdown(
+                    get_face_detector_model_choices(),
+                    label="Face Detector Model",
+                    info="Pick the detector used before analytics enrichment.",
+                    value=get_face_detector_model_key(getattr(roop.config.globals.CFG, "face_detector_model", None)),
+                    elem_id='face_detector_model',
+                    interactive=True,
+                )
+                face_detector_model_hint = gr.Markdown(
+                    get_face_detector_model_hint(getattr(roop.config.globals.CFG, "face_detector_model", None))
+                )
+                ui.globals.ui_face_landmarker_model = gr.Dropdown(
+                    get_face_landmarker_model_choices(),
+                    label="Face Landmarker Model",
+                    info="Pick the optional 68-point landmarker added on top of the current compatibility path.",
+                    value=get_face_landmarker_model_key(getattr(roop.config.globals.CFG, "face_landmarker_model", None)),
+                    elem_id='face_landmarker_model',
+                    interactive=True,
+                )
+                face_landmarker_model_hint = gr.Markdown(
+                    get_face_landmarker_model_hint(getattr(roop.config.globals.CFG, "face_landmarker_model", None))
+                )
+                ui.globals.ui_face_masker_model = gr.Dropdown(
+                    get_face_masker_model_choices(),
+                    label="Face Masker Model",
+                    info="Used when the DFL XSeg mask engine is active.",
+                    value=get_face_masker_model_key(getattr(roop.config.globals.CFG, "face_masker_model", None)),
+                    elem_id='face_masker_model',
+                    interactive=True,
+                )
+                face_masker_model_hint = gr.Markdown(
+                    get_face_masker_model_hint(getattr(roop.config.globals.CFG, "face_masker_model", None))
+                )
                 ui.globals.ui_face_swap_model = gr.Dropdown(
                     get_face_swap_model_choices(),
                     label="Face Swap Model",
@@ -121,6 +186,24 @@ def settings_tab():
     # Settings
     for s in settings_controls:
         s.select(fn=on_settings_changed, outputs=[memory_status])
+    ui.globals.ui_face_detector_model.change(
+        fn=lambda value: on_face_analytics_model_changed(value, "face_detector_model"),
+        inputs=[ui.globals.ui_face_detector_model],
+        outputs=[memory_status, face_detector_model_hint],
+        show_progress='hidden',
+    )
+    ui.globals.ui_face_landmarker_model.change(
+        fn=lambda value: on_face_analytics_model_changed(value, "face_landmarker_model"),
+        inputs=[ui.globals.ui_face_landmarker_model],
+        outputs=[memory_status, face_landmarker_model_hint],
+        show_progress='hidden',
+    )
+    ui.globals.ui_face_masker_model.change(
+        fn=lambda value: on_face_analytics_model_changed(value, "face_masker_model"),
+        inputs=[ui.globals.ui_face_masker_model],
+        outputs=[memory_status, face_masker_model_hint],
+        show_progress='hidden',
+    )
     ui.globals.ui_face_swap_model.change(
         fn=on_face_swap_model_changed,
         inputs=[ui.globals.ui_face_swap_model, ui.globals.ui_upscale],
@@ -168,7 +251,9 @@ def load_config(name):
         gr.Warning(f"Config '{name}' not found!")
         return
     from roop.config.settings import Settings
+    from roop.face import release_face_analyser
     roop.config.globals.CFG = Settings(path)
+    release_face_analyser()
     gr.Info(f"Config '{name}' loaded! Click 'Restart Server' to fully apply.")
 
 def on_option_changed(evt: gr.SelectData):
@@ -176,6 +261,10 @@ def on_option_changed(evt: gr.SelectData):
     if isinstance(evt.target, gr.Checkbox):
         if hasattr(roop.config.globals, attribname):
             setattr(roop.config.globals, attribname, evt.selected)
+            if attribname == "default_det_size":
+                from roop.face import release_face_analyser
+
+                release_face_analyser()
             return
     elif isinstance(evt.target, gr.Dropdown):
         if hasattr(roop.config.globals, attribname):
@@ -209,10 +298,18 @@ def on_settings_changed(evt: gr.SelectData):
     if isinstance(evt.target, gr.Checkbox):
         if hasattr(roop.config.globals.CFG, attribname):
             setattr(roop.config.globals.CFG, attribname, evt.selected)
+            if attribname == "force_cpu":
+                from roop.face import release_face_analyser
+
+                release_face_analyser()
             return update_memory_status()
     elif isinstance(evt.target, gr.Dropdown):
         if hasattr(roop.config.globals.CFG, attribname):
             setattr(roop.config.globals.CFG, attribname, evt.value)
+            if attribname == "provider":
+                from roop.face import release_face_analyser
+
+                release_face_analyser()
             return update_memory_status()
             
     raise gr.Error(f'Unhandled Setting for {evt.target}')

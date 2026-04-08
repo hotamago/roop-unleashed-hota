@@ -25,6 +25,8 @@ from tqdm import tqdm
 from roop.media.ffmpeg_writer import FFMPEG_VideoWriter
 from roop.media.stream_writer import StreamWriter
 from roop.media.video_io import open_video_capture, resolve_video_writer_config
+from roop.pipeline.face_serializer import deserialize_face as deserialize_face_payload
+from roop.pipeline.face_serializer import serialize_face as serialize_face_payload
 import roop.config.globals
 from roop.progress.status import format_duration, get_processing_status_line, publish_processing_progress
 
@@ -175,48 +177,20 @@ class ProcessMgr():
 
 
     def serialize_face(self, face: Face):
-        data = {}
-        for key in ("bbox", "kps", "landmark_2d_106"):
-            value = getattr(face, key, None)
-            if value is None:
-                try:
-                    value = face[key]
-                except Exception:
-                    value = None
-            if value is None:
-                continue
-            if isinstance(value, np.ndarray):
-                data[key] = value.astype(np.float32, copy=False)
-            else:
-                data[key] = np.asarray(value, dtype=np.float32)
-        matrix = getattr(face, "matrix", None)
-        if matrix is not None:
-            data["matrix"] = matrix.astype(np.float32, copy=False) if isinstance(matrix, np.ndarray) else np.asarray(matrix, dtype=np.float32)
-        if hasattr(face, "sex"):
-            data["sex"] = face.sex
-        return data
+        return serialize_face_payload(face)
 
 
     def deserialize_face(self, data):
-        class FaceProxy(dict):
-            def __getattr__(self, name):
-                try:
-                    return self[name]
-                except KeyError as exc:
-                    raise AttributeError(name) from exc
+        return deserialize_face_payload(data)
 
-            def __setattr__(self, name, value):
-                self[name] = value
-
-        face = FaceProxy()
-        for key in ("bbox", "kps", "landmark_2d_106", "embedding", "matrix"):
-            value = data.get(key)
-            if value is None:
-                continue
-            face[key] = np.array(value, dtype=np.float32)
-        if "sex" in data:
-            face["sex"] = data["sex"]
-        return face
+    def get_face_outline_landmarks(self, face):
+        landmarks_68 = getattr(face, "landmark_2d_68", None)
+        if landmarks_68 is not None and len(landmarks_68) >= 68:
+            return landmarks_68
+        landmarks_106 = getattr(face, "landmark_2d_106", None)
+        if landmarks_106 is not None and len(landmarks_106) >= 68:
+            return landmarks_106
+        return None
 
     def _get_selected_input_index(self):
         if not self.input_face_datas:
@@ -709,7 +683,7 @@ class ProcessMgr():
         if orig_width != upscale:
             fake_frame = cv2.resize(fake_frame, (upscale, upscale), cv2.INTER_CUBIC)
         scale_factor = int(upscale / max(orig_width, 1))
-        face_lm = target_face.landmark_2d_106 if hasattr(target_face, 'landmark_2d_106') and target_face.landmark_2d_106 is not None else None
+        face_lm = self.get_face_outline_landmarks(target_face)
         if enhanced_frame is None:
             result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, target_img, scale_factor, task["mask_offsets"], face_landmarks=face_lm)
         else:
@@ -1157,7 +1131,7 @@ class ProcessMgr():
             fake_frame = cv2.resize(fake_frame, (upscale, upscale), cv2.INTER_CUBIC)
         mask_offsets = [0, 0, 0, 0, 20.0, 10.0] if inputface is None else inputface.mask_offsets
 
-        face_lm = target_face.landmark_2d_106 if hasattr(target_face, 'landmark_2d_106') and target_face.landmark_2d_106 is not None else None
+        face_lm = self.get_face_outline_landmarks(target_face)
         if enhanced_frame is None:
             scale_factor = int(upscale / orig_width)
             result = self.paste_upscale(fake_frame, fake_frame, target_face.matrix, frame, scale_factor, mask_offsets, face_landmarks=face_lm)
@@ -1273,23 +1247,16 @@ class ProcessMgr():
 
 
     def create_landmark_mask(self, landmarks_2d, frame_shape, blend_amount):
-        """Build a binary mask from the convex hull of the 106-pt face landmarks.
-
-        Works in target-frame space so the shape naturally matches the actual
-        visible face area regardless of yaw/pitch - unlike the ellipse which is
-        computed in canonical 512x512 face-space and can bleed past the face
-        edge on profile shots.
-
-        A forehead extension is added because the 106-pt model only reaches
-        the eyebrow line; we project upward by ~60 % of the brow-to-chin
-        distance so the full forehead is covered on frontal faces without
-        over-extending on profiles.
-        """
+        """Build a binary mask from either 68-point or 106-point face landmarks."""
         mask = np.zeros(frame_shape[:2], dtype=np.uint8)
         pts = landmarks_2d.astype(np.int32)
 
-        # Eyebrow region is roughly indices 33-52; find the topmost y there.
-        brow_pts = pts[33:53]
+        if len(pts) >= 106:
+            brow_pts = pts[33:53]
+        elif len(pts) >= 68:
+            brow_pts = pts[17:27]
+        else:
+            brow_pts = pts
         top_brow_y = int(np.min(brow_pts[:, 1]))
         chin_y    = int(np.max(pts[:, 1]))
         face_h    = max(1, chin_y - top_brow_y)

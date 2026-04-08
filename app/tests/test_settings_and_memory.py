@@ -2,6 +2,11 @@ from types import SimpleNamespace
 
 import roop.config.globals
 from roop.config.settings import Settings
+from roop.face_analytics_models import (
+    get_face_detector_model_choices,
+    get_face_landmarker_model_choices,
+    get_face_masker_model_choices,
+)
 from roop.face_swap_models import (
     get_face_swap_model_choices,
     get_face_swap_upscale_choices,
@@ -30,6 +35,9 @@ def test_settings_loads_and_persists_manual_stage_tuning(tmp_path):
     assert cfg.mask_batch_size == 64
     assert cfg.enhance_batch_size == 8
     assert cfg.single_batch_workers == 1
+    assert cfg.face_detector_model == "insightface"
+    assert cfg.face_landmarker_model == "insightface_2d106"
+    assert cfg.face_masker_model == "legacy_xseg"
     assert cfg.face_swap_model == "inswapper_128"
     assert cfg.subsample_upscale == "256px"
 
@@ -40,6 +48,9 @@ def test_settings_loads_and_persists_manual_stage_tuning(tmp_path):
     cfg.mask_batch_size = 96
     cfg.enhance_batch_size = 12
     cfg.single_batch_workers = 3
+    cfg.face_detector_model = "retinaface"
+    cfg.face_landmarker_model = "2dfan4"
+    cfg.face_masker_model = "bisenet_resnet_18"
     cfg.face_swap_model = "hyperswap_1a_256"
     cfg.subsample_upscale = "512px"
     cfg.save()
@@ -52,6 +63,9 @@ def test_settings_loads_and_persists_manual_stage_tuning(tmp_path):
     assert reloaded.mask_batch_size == 96
     assert reloaded.enhance_batch_size == 12
     assert reloaded.single_batch_workers == 3
+    assert reloaded.face_detector_model == "retinaface"
+    assert reloaded.face_landmarker_model == "2dfan4"
+    assert reloaded.face_masker_model == "bisenet_resnet_18"
     assert reloaded.face_swap_model == "hyperswap_1a_256"
     assert reloaded.subsample_upscale == "512px"
 
@@ -86,6 +100,12 @@ def test_settings_rounds_hyperswap_upscale_to_supported_choice(tmp_path):
 def test_face_swap_model_choices_include_inswapper_fp16():
     assert "inswapper_128_fp16" in get_face_swap_model_choices()
     assert get_face_swap_upscale_choices("inswapper_128_fp16") == ["128px", "256px", "384px", "512px", "768px", "1024px"]
+
+
+def test_face_analytics_model_choices_include_facefusion_variants():
+    assert {"insightface", "retinaface", "scrfd", "yolo_face", "yunet"} <= set(get_face_detector_model_choices())
+    assert {"insightface_2d106", "2dfan4", "peppa_wutz", "fan_68_5"} <= set(get_face_landmarker_model_choices())
+    assert {"legacy_xseg", "xseg_1", "xseg_2", "xseg_3", "bisenet_resnet_18", "bisenet_resnet_34"} <= set(get_face_masker_model_choices())
 
 
 def test_resolve_memory_plan_uses_manual_stage_tuning(monkeypatch):
@@ -252,3 +272,46 @@ def test_staged_cache_snapshot_changes_when_face_swap_model_changes():
     options_b = SimpleNamespace(face_swap_model="hyperswap_1b_256", **base)
 
     assert get_staged_cache_options_snapshot(options_a) != get_staged_cache_options_snapshot(options_b)
+
+
+def test_staged_cache_snapshot_changes_when_face_analytics_models_change(monkeypatch):
+    base = {
+        "processors": {"faceswap": {}},
+        "face_swap_model": "inswapper_128",
+        "face_distance_threshold": 0.6,
+        "blend_ratio": 0.5,
+        "swap_mode": "all",
+        "selected_index": 0,
+        "masking_text": "",
+        "num_swap_steps": 1,
+        "subsample_size": 256,
+        "restore_original_mouth": False,
+        "show_face_masking": False,
+    }
+    options = SimpleNamespace(**base)
+
+    monkeypatch.setattr(
+        roop.config.globals,
+        "CFG",
+        SimpleNamespace(
+            face_detector_model="insightface",
+            face_landmarker_model="insightface_2d106",
+            face_masker_model="legacy_xseg",
+        ),
+        raising=False,
+    )
+    snapshot_a = get_staged_cache_options_snapshot(options)
+
+    monkeypatch.setattr(
+        roop.config.globals,
+        "CFG",
+        SimpleNamespace(
+            face_detector_model="scrfd",
+            face_landmarker_model="fan_68_5",
+            face_masker_model="bisenet_resnet_34",
+        ),
+        raising=False,
+    )
+    snapshot_b = get_staged_cache_options_snapshot(options)
+
+    assert snapshot_a != snapshot_b

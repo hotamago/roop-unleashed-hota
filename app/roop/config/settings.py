@@ -1,5 +1,13 @@
 import yaml
 
+from roop.face_analytics_models import (
+    DEFAULT_FACE_DETECTOR_MODEL,
+    DEFAULT_FACE_LANDMARKER_MODEL,
+    DEFAULT_FACE_MASKER_MODEL,
+    get_face_detector_model_key,
+    get_face_landmarker_model_key,
+    get_face_masker_model_key,
+)
 from roop.face_swap_models import (
     DEFAULT_FACE_SWAP_MODEL,
     get_face_swap_model_key,
@@ -58,6 +66,15 @@ class Settings:
             self.single_batch_workers = 1
         self.provider = self.default_get(data, "provider", "cuda")
         self.force_cpu = self.default_get(data, "force_cpu", False)
+        self.face_detector_model = get_face_detector_model_key(
+            self.default_get(data, "face_detector_model", DEFAULT_FACE_DETECTOR_MODEL)
+        )
+        self.face_landmarker_model = get_face_landmarker_model_key(
+            self.default_get(data, "face_landmarker_model", DEFAULT_FACE_LANDMARKER_MODEL)
+        )
+        self.face_masker_model = get_face_masker_model_key(
+            self.default_get(data, "face_masker_model", DEFAULT_FACE_MASKER_MODEL)
+        )
         self.output_template = self.default_get(data, "output_template", "{file}_{time}")
         self.use_os_temp_folder = self.default_get(data, "use_os_temp_folder", False)
         self.output_show_video = self.default_get(data, "output_show_video", True)
@@ -123,6 +140,9 @@ class Settings:
             "single_batch_workers": self.single_batch_workers,
             "provider": self.provider,
             "force_cpu": self.force_cpu,
+            "face_detector_model": self.face_detector_model,
+            "face_landmarker_model": self.face_landmarker_model,
+            "face_masker_model": self.face_masker_model,
             "output_template": self.output_template,
             "use_os_temp_folder": self.use_os_temp_folder,
             "output_show_video": self.output_show_video,
