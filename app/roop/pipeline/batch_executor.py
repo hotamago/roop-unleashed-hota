@@ -15,6 +15,7 @@ from roop.face_swap_models import (
     get_face_swap_model_standard_deviation,
     get_face_swap_model_type,
 )
+from roop.face_analytics_models import get_face_landmarker_model_key
 import roop.utils.vr as vr
 
 from typing import Any, List, Callable
@@ -118,13 +119,26 @@ class ProcessMgr():
 
 
     def resolve_face_analysis_modules(self):
-        modules = ["landmark_3d_68", "landmark_2d_106", "detection"]
+        modules = []
         swap_mode = getattr(self.options, "swap_mode", None)
+        selected_landmarker = get_face_landmarker_model_key(
+            getattr(getattr(roop.config.globals, "CFG", None), "face_landmarker_model", None)
+        )
+        if selected_landmarker == "insightface_2d106":
+            modules.append("landmark_2d_106")
+        if getattr(self.options, "restore_original_mouth", False):
+            modules.append("landmark_2d_106")
+        if getattr(roop.config.globals, "selected_enhancer", None) == "DMDNet":
+            modules.append("landmark_2d_106")
         if swap_mode == "selected":
             modules.append("recognition")
         if swap_mode == "all_female" or swap_mode == "all_male":
             modules.append("genderage")
-        return modules
+        deduped_modules = []
+        for module in modules:
+            if module not in deduped_modules:
+                deduped_modules.append(module)
+        return deduped_modules
 
 
     def initialize(self, input_faces, target_faces, options):
@@ -187,12 +201,50 @@ class ProcessMgr():
         return deserialize_face_payload(data)
 
     def get_face_outline_landmarks(self, face):
-        landmarks_68 = getattr(face, "landmark_2d_68", None)
-        if landmarks_68 is not None and len(landmarks_68) >= 68:
+        landmarks_68 = self._reshape_landmarks(getattr(face, "landmark_2d_68", None), 68)
+        if landmarks_68 is not None:
             return landmarks_68
-        landmarks_106 = getattr(face, "landmark_2d_106", None)
-        if landmarks_106 is not None and len(landmarks_106) >= 68:
+        landmarks_106 = self._reshape_landmarks(getattr(face, "landmark_2d_106", None), 68)
+        if landmarks_106 is not None:
             return landmarks_106
+        return None
+
+    @staticmethod
+    def _reshape_landmarks(landmarks, min_points=1):
+        if landmarks is None:
+            return None
+        try:
+            reshaped = np.asarray(landmarks, dtype=np.float32).reshape(-1, 2)
+        except Exception:
+            return None
+        if reshaped.shape[0] < min_points:
+            return None
+        return reshaped
+
+    def get_face_rotation_reference_points(self, face):
+        landmarks_106 = self._reshape_landmarks(getattr(face, "landmark_2d_106", None), 73)
+        if landmarks_106 is not None:
+            return float(landmarks_106[72][0]), float(landmarks_106[0][0])
+
+        landmarks_68 = self._reshape_landmarks(getattr(face, "landmark_2d_68", None), 68)
+        if landmarks_68 is not None:
+            brow_points = landmarks_68[17:27]
+            if brow_points.size > 0:
+                forehead_x = float(np.mean(brow_points[:, 0]))
+                chin_x = float(landmarks_68[8][0])
+                return forehead_x, chin_x
+
+        return None
+
+    def get_face_mouth_landmarks(self, face):
+        landmarks_106 = self._reshape_landmarks(getattr(face, "landmark_2d_106", None), 71)
+        if landmarks_106 is not None:
+            return landmarks_106[52:71].astype(np.int32)
+
+        landmarks_68 = self._reshape_landmarks(getattr(face, "landmark_2d_68", None), 68)
+        if landmarks_68 is not None:
+            return landmarks_68[48:68].astype(np.int32)
+
         return None
 
     def _get_selected_input_index(self):
@@ -1081,8 +1133,10 @@ class ProcessMgr():
         end_x = original_face.bbox[2]
         bbox_center_x = start_x + (bounding_box_width // 2.0)
 
-        forehead_x = original_face.landmark_2d_106[72][0]
-        chin_x = original_face.landmark_2d_106[0][0]
+        rotation_refs = self.get_face_rotation_reference_points(original_face)
+        if rotation_refs is None:
+            return None
+        forehead_x, chin_x = rotation_refs
 
         if horizontal_face:
             if chin_x < forehead_x:
@@ -1396,9 +1450,8 @@ class ProcessMgr():
             s_top, s_bot, s_left, s_right = mask_offsets[6], mask_offsets[7], mask_offsets[8], mask_offsets[9]
         else:
             s_top = s_bot = s_left = s_right = 1.0
-        landmarks = face.landmark_2d_106
-        if landmarks is not None:
-            mouth_points = landmarks[52:71].astype(np.int32)
+        mouth_points = self.get_face_mouth_landmarks(face)
+        if mouth_points is not None and len(mouth_points) > 0:
             raw_min_x, raw_min_y = np.min(mouth_points, axis=0)
             raw_max_x, raw_max_y = np.max(mouth_points, axis=0)
             mouth_w = max(1, raw_max_x - raw_min_x)

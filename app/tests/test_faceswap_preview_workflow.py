@@ -24,7 +24,7 @@ def test_on_srcfile_changed_extracts_source_faces_with_recognition(monkeypatch, 
 
     faceswap_tab.on_srcfile_changed([SimpleNamespace(name=str(source_path))])
 
-    assert recorded_modules == [("landmark_3d_68", "landmark_2d_106", "detection", "recognition")]
+    assert recorded_modules == [("recognition",)]
     assert len(roop.config.globals.INPUT_FACESETS) == 1
 
 
@@ -44,7 +44,7 @@ def test_on_use_face_from_selected_extracts_target_faces_with_recognition(monkey
 
     faceswap_tab.on_use_face_from_selected(["target.png"], 1)
 
-    assert recorded_modules == [("landmark_3d_68", "landmark_2d_106", "detection", "recognition")]
+    assert recorded_modules == [("recognition",)]
     assert len(roop.config.globals.TARGET_FACES) == 1
 
 

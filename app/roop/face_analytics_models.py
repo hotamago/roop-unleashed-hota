@@ -166,12 +166,13 @@ def get_face_detector_model_hint(model_name=None) -> str:
     size_choices = ", ".join(get_face_detector_size_choices(model_key))
     if model_key == "insightface":
         return (
-            f"Selected `{model_key}`. Uses the bundled buffalo_l detector and keeps the existing "
-            f"106-point InsightFace analytics path. Compatible detector sizes: {size_choices}."
+            f"Selected `{model_key}`. Uses the bundled buffalo_l detector directly. "
+            f"Compatible detector sizes: {size_choices}."
         )
     return (
-        f"Selected `{model_key}`. Downloads the FaceFusion detector on first use, then feeds its "
-        f"5-point detections back into the existing InsightFace analytics stack. Compatible sizes: {size_choices}."
+        f"Selected `{model_key}`. Uses the FaceFusion detector directly. "
+        f"Only explicit compatibility modules such as recognition, gender/age, or 106-point landmarks load if another feature still requires them. "
+        f"Compatible sizes: {size_choices}."
     )
 
 
@@ -190,10 +191,10 @@ def get_face_landmarker_model_choices() -> list[str]:
 def get_face_landmarker_model_hint(model_name=None) -> str:
     model_key = get_face_landmarker_model_key(model_name)
     if model_key == "insightface_2d106":
-        return "Selected `insightface_2d106`. Keeps the current 106-point landmark path from buffalo_l."
+        return "Selected `insightface_2d106`. Uses the 106-point InsightFace landmark model directly."
     return (
-        f"Selected `{model_key}`. Adds a FaceFusion-style 68-point landmarker while keeping the "
-        "existing 106-point compatibility landmarks for swap, recognition, and mouth restore."
+        f"Selected `{model_key}`. Uses a FaceFusion-style 68-point landmarker directly. "
+        "A separate 106-point compatibility model only loads if a downstream feature still explicitly needs it."
     )
 
 

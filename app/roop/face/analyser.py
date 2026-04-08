@@ -1,10 +1,12 @@
 import threading
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any
 
 import insightface
 import numpy as np
 from insightface.app.common import Face
+from insightface.model_zoo import get_model as get_insightface_model
 
 import roop.config.globals
 from roop.face.analytics_runtime import (
@@ -25,7 +27,12 @@ from roop.utils import resolve_relative_path
 FACE_ANALYSER = None
 FACE_ANALYSER_SIGNATURE = None
 THREAD_LOCK_ANALYSER = threading.Lock()
-DEFAULT_FACE_ANALYSIS_MODULES = ["landmark_3d_68", "landmark_2d_106", "detection"]
+DEFAULT_FACE_ANALYSIS_MODULES = []
+INSIGHTFACE_COMPAT_MODEL_FILES = {
+    "landmark_2d_106": "2d106det.onnx",
+    "recognition": "w600k_r50.onnx",
+    "genderage": "genderage.onnx",
+}
 
 
 class HybridFaceAnalyser:
@@ -133,25 +140,47 @@ def _create_face_analyser() -> Any:
     landmarker_model = get_face_landmarker_model_key(getattr(cfg, "face_landmarker_model", None))
     providers = get_face_analyser_providers()
     det_size = resolve_face_detector_size(detector_model)
-    allowed_modules = _get_allowed_modules()
+    requested_modules = _get_allowed_modules()
 
     if detector_model != "insightface":
         ensure_face_detector_model_downloaded(detector_model)
     if landmarker_model != "insightface_2d106":
         ensure_face_landmarker_model_downloaded(landmarker_model)
 
-    model_path = resolve_relative_path("..")
-    compat_analyser = insightface.app.FaceAnalysis(
-        name="buffalo_l",
-        root=model_path,
-        providers=providers,
-        allowed_modules=allowed_modules,
+    compat_modules = [module for module in requested_modules if module in INSIGHTFACE_COMPAT_MODEL_FILES]
+
+    if detector_model == "insightface":
+        allowed_modules = ["detection", *compat_modules]
+        model_path = resolve_relative_path("..")
+        compat_analyser = insightface.app.FaceAnalysis(
+            name="buffalo_l",
+            root=model_path,
+            providers=providers,
+            allowed_modules=allowed_modules,
+        )
+        compat_analyser.prepare(
+            ctx_id=-1 if providers == ["CPUExecutionProvider"] else 0,
+            det_size=det_size,
+        )
+    else:
+        compat_models = {}
+        for module in compat_modules:
+            model_filename = INSIGHTFACE_COMPAT_MODEL_FILES[module]
+            model_path = resolve_relative_path(f"../models/buffalo_l/{model_filename}")
+            compat_model = get_insightface_model(model_path, providers=providers)
+            prepare = getattr(compat_model, "prepare", None)
+            if callable(prepare):
+                prepare(-1 if providers == ["CPUExecutionProvider"] else 0)
+            compat_models[getattr(compat_model, "taskname", module)] = compat_model
+        compat_analyser = SimpleNamespace(models=compat_models)
+        allowed_modules = compat_modules
+    print(
+        "Face analytics pipeline:",
+        f"detector={detector_model}",
+        f"landmarker={landmarker_model}",
+        f"compat={allowed_modules if allowed_modules else ['none']}",
     )
-    compat_analyser.prepare(
-        ctx_id=-1 if providers == ["CPUExecutionProvider"] else 0,
-        det_size=det_size,
-    )
-    roop.config.globals.g_current_face_analysis = allowed_modules
+    roop.config.globals.g_current_face_analysis = requested_modules
     return HybridFaceAnalyser(compat_analyser, detector_model, landmarker_model, providers, det_size)
 
 

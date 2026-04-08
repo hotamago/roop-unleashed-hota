@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+import roop.config.globals
 from roop.face.analyser import HybridFaceAnalyser
 from roop.face.analytics_runtime import Fan68From5Landmarker, YoloFaceDetector
 from roop.pipeline.batch_executor import ProcessMgr
@@ -10,28 +11,41 @@ from roop.pipeline.batch_executor import ProcessMgr
 def test_process_mgr_limits_face_analysis_modules_for_non_matching_modes():
     mgr = ProcessMgr(None)
     mgr.options = SimpleNamespace(swap_mode="all")
+    roop.config.globals.CFG = SimpleNamespace(face_landmarker_model="fan_68_5")
 
     modules = mgr.resolve_face_analysis_modules()
 
-    assert modules == ["landmark_3d_68", "landmark_2d_106", "detection"]
+    assert modules == []
 
 
 def test_process_mgr_adds_recognition_only_for_selected_matching():
     mgr = ProcessMgr(None)
     mgr.options = SimpleNamespace(swap_mode="selected")
+    roop.config.globals.CFG = SimpleNamespace(face_landmarker_model="fan_68_5")
 
     modules = mgr.resolve_face_analysis_modules()
 
-    assert modules == ["landmark_3d_68", "landmark_2d_106", "detection", "recognition"]
+    assert modules == ["recognition"]
 
 
 def test_process_mgr_adds_genderage_for_gender_filtering():
     mgr = ProcessMgr(None)
     mgr.options = SimpleNamespace(swap_mode="all_female")
+    roop.config.globals.CFG = SimpleNamespace(face_landmarker_model="fan_68_5")
 
     modules = mgr.resolve_face_analysis_modules()
 
-    assert modules == ["landmark_3d_68", "landmark_2d_106", "detection", "genderage"]
+    assert modules == ["genderage"]
+
+
+def test_process_mgr_keeps_106_only_when_feature_explicitly_needs_it():
+    mgr = ProcessMgr(None)
+    mgr.options = SimpleNamespace(swap_mode="all", restore_original_mouth=True)
+    roop.config.globals.CFG = SimpleNamespace(face_landmarker_model="fan_68_5")
+
+    modules = mgr.resolve_face_analysis_modules()
+
+    assert modules == ["landmark_2d_106"]
 
 
 def test_hybrid_face_analyser_custom_detector_preserves_compatibility_landmarks(monkeypatch):
@@ -66,6 +80,41 @@ def test_hybrid_face_analyser_custom_detector_preserves_compatibility_landmarks(
     assert faces[0].landmark_2d_106.shape == (106, 2)
     assert faces[0].landmark_2d_68.shape == (68, 2)
     assert faces[0].kps.shape == (5, 2)
+
+
+def test_create_face_analyser_skips_faceanalysis_wrapper_for_custom_detector(monkeypatch):
+    captured = {}
+    roop.config.globals.CFG = SimpleNamespace(
+        face_detector_model="yolo_face",
+        face_landmarker_model="fan_68_5",
+        force_cpu=True,
+    )
+    roop.config.globals.g_desired_face_analysis = ["recognition"]
+
+    monkeypatch.setattr("roop.face.analyser.ensure_face_detector_model_downloaded", lambda *_args, **_kwargs: ["det.onnx"])
+    monkeypatch.setattr("roop.face.analyser.ensure_face_landmarker_model_downloaded", lambda *_args, **_kwargs: ["lmk.onnx"])
+    monkeypatch.setattr("roop.face.analyser.create_face_detector", lambda *_args, **_kwargs: SimpleNamespace())
+    monkeypatch.setattr("roop.face.analyser.create_face_landmarker", lambda *_args, **_kwargs: SimpleNamespace())
+    monkeypatch.setattr("roop.face.analyser.get_face_analyser_providers", lambda: ["CPUExecutionProvider"])
+    monkeypatch.setattr("roop.face.analyser.resolve_face_detector_size", lambda *_args, **_kwargs: (640, 640))
+    monkeypatch.setattr("roop.face.analyser.resolve_relative_path", lambda path: f"ROOT::{path}")
+    def fake_get_insightface_model(model_path, providers=None):
+        captured.setdefault("paths", []).append((model_path, tuple(providers or [])))
+        return SimpleNamespace(taskname="recognition", prepare=lambda *_args, **_kwargs: None)
+
+    monkeypatch.setattr("roop.face.analyser.get_insightface_model", fake_get_insightface_model)
+
+    def fail_faceanalysis(*_args, **_kwargs):
+        raise AssertionError("FaceAnalysis wrapper should not be created for custom detectors")
+
+    monkeypatch.setattr("roop.face.analyser.insightface.app.FaceAnalysis", fail_faceanalysis)
+
+    from roop.face.analyser import _create_face_analyser
+
+    analyser = _create_face_analyser()
+
+    assert analyser.compat_analyser.models.keys() == {"recognition"}
+    assert captured["paths"] == [("ROOT::../models/buffalo_l/w600k_r50.onnx", ("CPUExecutionProvider",))]
 
 
 def test_yolo_face_detector_keeps_bgr_channel_order(monkeypatch):
@@ -159,3 +208,46 @@ def test_process_mgr_prefers_refined_landmarks_for_swap_alignment():
             dtype=np.float32,
         ),
     )
+
+
+def test_process_mgr_rotation_action_falls_back_to_68_landmarks():
+    mgr = ProcessMgr(None)
+    frame = np.zeros((80, 120, 3), dtype=np.uint8)
+    face = SimpleNamespace(
+        bbox=np.array([10.0, 20.0, 90.0, 50.0], dtype=np.float32),
+        landmark_2d_68=np.zeros((68, 2), dtype=np.float32),
+        landmark_2d_106=None,
+    )
+    face.landmark_2d_68[17:27] = np.array([[20.0, 24.0]] * 10, dtype=np.float32)
+    face.landmark_2d_68[8] = np.array([45.0, 48.0], dtype=np.float32)
+
+    rotation = mgr.rotation_action(face, frame)
+
+    assert rotation == "rotate_clockwise"
+
+
+def test_process_mgr_create_mouth_mask_falls_back_to_68_landmarks():
+    mgr = ProcessMgr(None)
+    frame = np.zeros((128, 128, 3), dtype=np.uint8)
+    face = SimpleNamespace(
+        landmark_2d_106=None,
+        landmark_2d_68=np.zeros((68, 2), dtype=np.float32),
+    )
+    mouth_points = np.array(
+        [
+            [48, 60], [52, 58], [56, 57], [60, 58], [64, 60],
+            [60, 62], [56, 63], [52, 62], [50, 60], [53, 59],
+            [56, 59], [59, 59], [62, 60], [59, 61], [56, 61],
+            [53, 61], [52, 60], [56, 60], [60, 60], [56, 62],
+        ],
+        dtype=np.float32,
+    )
+    face.landmark_2d_68[48:68] = mouth_points
+
+    mouth_cutout, mouth_box, mouth_polygon = mgr.create_mouth_mask(face, frame)
+
+    assert mouth_cutout is not None
+    assert mouth_cutout.size > 0
+    assert mouth_box[2] > mouth_box[0]
+    assert mouth_box[3] > mouth_box[1]
+    assert mouth_polygon.shape == (20, 2)
