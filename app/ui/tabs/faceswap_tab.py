@@ -21,7 +21,7 @@ last_image = None
 
 
 def sync_resume_processing_cache_id(resume_path) -> None:
-    """processing_cache/jobs/<stem>/â€¦ uses the resume JSON basename stem (stable human-visible id)."""
+    """processing_cache/jobs/<stem>/... uses the resume JSON basename stem (stable human-visible id)."""
     if not resume_path:
         roop.config.globals.active_resume_cache_id = None
         return
@@ -389,7 +389,7 @@ def get_resume_job_signature(payload):
 def pick_resume_job_key_for_write(prior_disk: dict | None, payload: dict) -> str:
     """
     Keep the same resume_job_key JSON field when job identity (sources/targets/selection) is unchanged.
-    (Job folders are keyed by resume JSON stem + target file id â€” see active_resume_cache_id.)
+    (Job folders are keyed by resume JSON stem + target file id - see active_resume_cache_id.)
     """
     if isinstance(prior_disk, dict):
         old_jk = prior_disk.get("resume_job_key")
@@ -952,7 +952,7 @@ def rebuild_process_entries(destfiles):
 def faceswap_tab():
     global no_face_choices, previewimage
 
-    with gr.Tab("ðŸŽ­ Face Swap"):
+    with gr.Tab("Face Swap"):
         with gr.Row(variant='panel'):
             bt_srcfiles = gr.Files(label='Source Images or Facesets', file_count="multiple", file_types=["image", ".fsz"], elem_id='filelist', height=233)
             bt_destfiles = gr.Files(label='Target File(s)', file_count="multiple", file_types=["image", "video"], elem_id='filelist', height=233)
@@ -979,14 +979,14 @@ def faceswap_tab():
                     input_faces = gr.Gallery(label="Input faces gallery", allow_preview=False, preview=False, height=None, columns=2, object_fit="contain", interactive=False)
                     target_faces = gr.Gallery(label="Target faces gallery", allow_preview=False, preview=False, height=None, columns=2, object_fit="contain", interactive=False)
                 with gr.Row():
-                    bt_move_left_input = gr.Button("â¬… Move left", size='sm')
-                    bt_move_right_input = gr.Button("âž¡ Move right", size='sm')
-                    bt_move_left_target = gr.Button("â¬… Move left", size='sm')
-                    bt_move_right_target = gr.Button("âž¡ Move right", size='sm')
+                    bt_move_left_input = gr.Button("Move left", size='sm')
+                    bt_move_right_input = gr.Button("Move right", size='sm')
+                    bt_move_left_target = gr.Button("Move left", size='sm')
+                    bt_move_right_target = gr.Button("Move right", size='sm')
                 with gr.Row():
-                    bt_remove_selected_input_face = gr.Button("âŒ Remove selected", size='sm')
-                    bt_clear_input_faces = gr.Button("ðŸ’¥ Clear all", variant='stop', size='sm')
-                    bt_remove_selected_target_face = gr.Button("âŒ Remove selected", size='sm')
+                    bt_remove_selected_input_face = gr.Button("Remove selected", size='sm')
+                    bt_clear_input_faces = gr.Button("Clear all", variant='stop', size='sm')
+                    bt_remove_selected_target_face = gr.Button("Remove selected", size='sm')
 
                 with gr.Row():
                     with gr.Column():
@@ -1055,7 +1055,7 @@ def faceswap_tab():
                             interactive=roop.config.globals.CFG.mask_engine == "Clip2Seg",
                         )
                         bt_preview_mask = gr.Button(
-                            "ðŸ‘¥ Show Mask Preview", variant="secondary"
+                            "Show Mask Preview", variant="secondary"
                         )
 
             with gr.Column(scale=2):
@@ -1064,14 +1064,14 @@ def faceswap_tab():
                                              brush=gr.Brush(color_mode="fixed", colors=["rgba(255, 255, 255, 1"]), interactive=True, visible=False)
                 with gr.Row(variant='panel'):
                     fake_preview = gr.Checkbox(label="Face swap frames", value=False)
-                    bt_refresh_preview = gr.Button("ðŸ”„ Refresh", variant='secondary', size='sm')
+                    bt_refresh_preview = gr.Button("Refresh", variant='secondary', size='sm')
                     bt_use_face_from_preview = gr.Button("Use Face from this Frame", variant='primary', size='sm')
                 with gr.Row():
                     preview_frame_num = gr.Slider(1, 1, value=1, label="Frame Number", info='0:00:00', step=1.0, interactive=True)
                 with gr.Row():
                     text_frame_clip = gr.Markdown('Processing frame range [0 - 0]')
-                    set_frame_start = gr.Button("â¬… Set as Start", size='sm')
-                    set_frame_end = gr.Button("âž¡ Set as End", size='sm')
+                    set_frame_start = gr.Button("Set as Start", size='sm')
+                    set_frame_end = gr.Button("Set as End", size='sm')
         with gr.Row(variant='panel'):
             with gr.Column(scale=1):
                 selected_face_detection = gr.Dropdown(swap_choices, value=roop.config.globals.CFG.face_detection_mode, label="Specify face selection for swapping")
@@ -1102,10 +1102,10 @@ def faceswap_tab():
 
         with gr.Row(variant='panel'):
             with gr.Column():
-                bt_start = gr.Button("â–¶ Start", variant='primary')
+                bt_start = gr.Button("Start", variant='primary')
             with gr.Column():
-                bt_stop = gr.Button("â¹ Stop", variant='secondary', interactive=False)
-                gr.Button("ðŸ‘€ Open Output Folder", size='sm').click(fn=lambda: util.open_folder(roop.config.globals.output_path))
+                bt_stop = gr.Button("Stop", variant='secondary', interactive=False)
+                gr.Button("Open Output Folder", size='sm').click(fn=lambda: util.open_folder(roop.config.globals.output_path))
             with gr.Column(scale=2):
                 output_method = gr.Dropdown(["File","Virtual Camera", "Both"], value=roop.config.globals.CFG.output_method, label="Select Output Method", interactive=True)
         with gr.Row(variant='panel'):
@@ -1340,7 +1340,7 @@ def remove_selected_input_face():
 def move_selected_input(button_text):
     global SELECTED_INPUT_FACE_INDEX
 
-    if button_text == "â¬… Move left":
+    if button_text == "Move left":
         if SELECTED_INPUT_FACE_INDEX <= 0:
             return ui.globals.ui_input_thumbs
         offset = -1
@@ -1362,7 +1362,7 @@ def move_selected_input(button_text):
 def move_selected_target(button_text):
     global SELECTED_TARGET_FACE_INDEX
 
-    if button_text == "â¬… Move left":
+    if button_text == "Move left":
         if SELECTED_TARGET_FACE_INDEX <= 0:
             return ui.globals.ui_target_thumbs
         offset = -1

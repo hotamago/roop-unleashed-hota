@@ -251,7 +251,7 @@ def get_device() -> str:
             print("Forcing CUDAExecutionProvider!")  # Debug
         else:
             roop.config.globals.execution_providers = ["CPUExecutionProvider"]
-            print("No GPU providers availableâ€”defaulting to CPU.")  # Debug
+            print("No GPU providers available - defaulting to CPU.")  # Debug
 
     prov = roop.config.globals.execution_providers[0]
     if "CoreMLExecutionProvider" in prov:
@@ -356,13 +356,11 @@ def open_folder(path: str):
 
 def create_version_html() -> str:
     python_version = ".".join([str(x) for x in sys.version_info[0:3]])
-    versions_html = f"""
-python: <span title="{sys.version}">{python_version}</span>
-â€¢
-torch: {getattr(torch, '__long_version__',torch.__version__)}
-â€¢
-gradio: {gradio.__version__}
-"""
+    versions_html = (
+        f'python: <span title="{sys.version}">{python_version}</span> | '
+        f"torch: {getattr(torch, '__long_version__', torch.__version__)} | "
+        f"gradio: {gradio.__version__}"
+    )
     return versions_html
 
 

@@ -50,12 +50,12 @@ def run():
     if roop.config.globals.CFG.provider == "tensorrt":
         _trt_ok = False
         try:
-            import tensorrt  # noqa: F401 â€“ presence means DLLs are registered
+            import tensorrt  # noqa: F401 - presence means DLLs are registered
             _trt_ok = True
         except ImportError:
             pass
         if not _trt_ok:
-            print("TensorRT runtime libraries not found â€“ falling back to CUDA provider.")
+            print("TensorRT runtime libraries not found - falling back to CUDA provider.")
             roop.config.globals.CFG.provider = "cuda"
 
     roop.config.globals.execution_providers = decode_execution_providers([roop.config.globals.CFG.provider])
@@ -68,9 +68,8 @@ def run():
     run_server = True
     uii.ui_restart_server = False
     mycss = """
-    /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-       CARBON DARK  â€“  roop-unleashed UI theme
-       Surface scale (deep â†’ elevated):
+    /* === CARBON DARK - roop-unleashed UI theme ===
+       Surface scale (deep -> elevated):
          #0d0d0d  page / body
          #151515  app container
          #1c1c1c  block / card surfaces
@@ -86,7 +85,7 @@ def run():
          #2e6645  primary button hover
        Danger:
          #7a2020  stop/cancel fill  |  #9a2a2a  hover
-    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+       === */
 
     :root, .dark {
         color-scheme: dark !important;
@@ -183,7 +182,7 @@ def run():
         --neutral-950: #0d0d0d;
     }
 
-    /* â”€â”€ Page & container â”€â”€ */
+    /* --- Page & container --- */
     html, body { background: #0d0d0d !important; color: #eeeeee !important; }
     .gradio-container, .gradio-container.dark {
         background: #0d0d0d !important;
@@ -191,7 +190,7 @@ def run():
         max-width: 100% !important;
     }
 
-    /* â”€â”€ Blocks / cards â”€â”€ */
+    /* --- Blocks / cards --- */
     .block, .panel, fieldset, .form {
         background: #1c1c1c !important;
         border: 1px solid #383838 !important;
@@ -202,7 +201,7 @@ def run():
     .block:hover { border-color: #484848 !important; }
     .gap, .contain, .tabs { background: #151515 !important; border: none !important; }
 
-    /* â”€â”€ Labels & text â”€â”€ */
+    /* --- Labels & text --- */
     .block-label, .block > .label-wrap > span,
     .block > label > span, label > span {
         color: #999999 !important;
@@ -215,7 +214,7 @@ def run():
     .block div  { color: #eeeeee !important; }
     .block .info, .block .description { color: #999999 !important; font-size: 0.82rem !important; }
 
-    /* â”€â”€ Inputs â”€â”€ */
+    /* --- Inputs --- */
     input:not([type=range]):not([type=checkbox]):not([type=radio]), textarea, select {
         background: #2c2c2c !important;
         border: 1px solid #383838 !important;
@@ -234,7 +233,7 @@ def run():
     }
     ::placeholder { color: #555555 !important; opacity: 1; }
 
-    /* â”€â”€ Dropdowns â”€â”€ */
+    /* --- Dropdowns --- */
     .wrap, ul.options {
         background: #2c2c2c !important;
         border: 1px solid #383838 !important;
@@ -251,7 +250,7 @@ def run():
     ul.options li:hover    { background: #3d8059 !important; color: #f0f0f0 !important; }
     ul.options li.selected { background: #2e6645 !important; color: #f0f0f0 !important; }
 
-    /* â”€â”€ Buttons â”€â”€ */
+    /* --- Buttons --- */
     button {
         border-radius: 6px !important;
         font-weight: 500 !important;
@@ -293,7 +292,7 @@ def run():
         border-color: #9a2a2a !important;
     }
 
-    /* â”€â”€ Sliders â”€â”€ */
+    /* --- Sliders --- */
     input[type=range] { accent-color: #50a070; }
     input[type=range]::-webkit-slider-thumb {
         background: #50a070 !important;
@@ -303,7 +302,7 @@ def run():
     input[type=range]::-moz-range-thumb            { background: #50a070 !important; }
     input[type=range]::-webkit-slider-runnable-track { background: #2c2c2c !important; }
 
-    /* â”€â”€ Checkboxes â€“ native rendering for reliable checked state â”€â”€ */
+    /* --- Checkboxes - native rendering for reliable checked state --- */
     input[type=checkbox] {
         appearance: auto !important;
         -webkit-appearance: checkbox !important;
@@ -319,7 +318,7 @@ def run():
     input[type=checkbox]:hover { transform: scale(1.1) !important; }
     input[type=radio]  { accent-color: #50a070; }
 
-    /* â”€â”€ Upload / drop zones â”€â”€ */
+    /* --- Upload / drop zones --- */
     .upload-container, .file-preview, .drop-container {
         background: #1c1c1c !important;
         border: 2px dashed #383838 !important;
@@ -332,7 +331,7 @@ def run():
         background: rgba(80,160,112,0.04) !important;
     }
 
-    /* â”€â”€ Gallery â”€â”€ */
+    /* --- Gallery --- */
     .gallery, .gallery-container, .grid-container { background: #181818 !important; }
     .gallery-item, .thumbnail-item {
         border: 1px solid #383838 !important;
@@ -346,14 +345,14 @@ def run():
         transform: translateY(-2px) !important;
     }
 
-    /* â”€â”€ Header bar â”€â”€ */
+    /* --- Header bar --- */
     .compact {
         background: #111111 !important;
         border-bottom: 1px solid #272727 !important;
         padding: 6px 12px !important;
     }
 
-    /* â”€â”€ Tab bar â”€â”€ */
+    /* --- Tab bar --- */
     .tab-nav {
         background: #111111 !important;
         border-bottom: 1px solid #272727 !important;
@@ -384,7 +383,7 @@ def run():
         transform: none !important;
     }
 
-    /* â”€â”€ Accordion headers â”€â”€ */
+    /* --- Accordion headers --- */
     .label-wrap {
         background: #242424 !important;
         border: 1px solid #383838 !important;
@@ -395,20 +394,20 @@ def run():
     .label-wrap:hover { background: #2c2c2c !important; border-color: #484848 !important; }
     .label-wrap span  { color: #eeeeee !important; font-weight: 500 !important; }
 
-    /* â”€â”€ Scrollbars â”€â”€ */
+    /* --- Scrollbars --- */
     ::-webkit-scrollbar       { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #181818; border-radius: 3px; }
     ::-webkit-scrollbar-thumb { background: #383838; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #50a070; }
 
-    /* â”€â”€ Progress / generating â”€â”€ */
+    /* --- Progress / generating --- */
     .progress-bar {
         background: linear-gradient(90deg, #3d8059, #50a070) !important;
         border-radius: 3px !important;
     }
     .generating { border-color: #50a070 !important; }
 
-    /* â”€â”€ Toasts â”€â”€ */
+    /* --- Toasts --- */
     /* The wrapper is always in the DOM; keep it invisible when empty */
     .toast-wrap {
         background: transparent !important;
@@ -425,7 +424,7 @@ def run():
     .toast-title { color: #eeeeee !important; font-weight: 600 !important; }
     .toast-text  { color: #999999 !important; }
 
-    /* â”€â”€ Markdown / prose â”€â”€ */
+    /* --- Markdown / prose --- */
     .prose, .prose p, .prose li { color: #eeeeee !important; }
     .prose a       { color: #50a070 !important; }
     .prose a:hover { color: #6dba8a !important; }
@@ -437,7 +436,7 @@ def run():
         padding: 1px 5px !important;
     }
 
-    /* â”€â”€ Preserved layout rules â”€â”€ */
+    /* --- Preserved layout rules --- */
     span { color: var(--block-info-text-color) }
     /* Remove the visible block border from the version-info HTML element */
     #versions { border: none !important; background: transparent !important; }
@@ -469,8 +468,8 @@ def run():
         with gr.Blocks(title=f'{roop_config.name} {roop_config.version}', theme=gr.themes.Base(), css=mycss, delete_cache=(60, 86400)) as ui:
             with gr.Row(variant='compact'):
                     gr.HTML(util.create_version_html(), elem_id="versions")
-                    bt_save_session = gr.Button("ðŸ’¾ Save Settings", size='sm', variant='primary', scale=0)
-                    bt_load_session = gr.Button("ðŸ“‚ Load Settings", size='sm', scale=0)
+                    bt_save_session = gr.Button("Save Settings", size='sm', variant='primary', scale=0)
+                    bt_load_session = gr.Button("Load Settings", size='sm', scale=0)
             bt_destfiles = faceswap_tab()
             facemgr_tab()
             extras_tab(bt_destfiles)

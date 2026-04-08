@@ -1186,8 +1186,8 @@ class ProcessMgr():
         paste_face = paste_face + (1 - img_matte) * target_img.astype(np.float32)
 
         if self.options.show_face_area_overlay:
-            # Gradient overlay: green in the core (maskâ‰ˆ1), yellow/orange at the
-            # edge blend zone (maskâ‰ˆ0.5), invisible outside (maskâ‰ˆ0).
+            # Gradient overlay: green in the core (mask ~ 1), yellow/orange at the
+            # edge blend zone (mask ~ 0.5), invisible outside (mask ~ 0).
             # G channel scales with mask strength; R channel peaks mid-transition.
             overlay = np.zeros_like(target_img, dtype=np.uint8)
             overlay[:, :, 1] = (mask_2d * 200).astype(np.uint8)
@@ -1208,7 +1208,7 @@ class ProcessMgr():
         mask_h = np.max(mask_h_inds) - np.min(mask_h_inds)
         mask_w = np.max(mask_w_inds) - np.min(mask_w_inds)
         mask_size = int(np.sqrt(mask_h * mask_w))
-        # blend_px controls ONLY edge softness â€” no erosion, mask coverage unchanged
+        # blend_px controls ONLY edge softness - no erosion, mask coverage unchanged
         blend_px = max(1, int(mask_size * face_mask_blend / 200))
         blur_size = blend_px * 2 + 1
         return cv2.GaussianBlur(img_matte, (blur_size, blur_size), 0)
@@ -1218,8 +1218,8 @@ class ProcessMgr():
         """Build a binary mask from the convex hull of the 106-pt face landmarks.
 
         Works in target-frame space so the shape naturally matches the actual
-        visible face area regardless of yaw/pitch â€” unlike the ellipse which is
-        computed in canonical 512Ã—512 face-space and can bleed past the face
+        visible face area regardless of yaw/pitch - unlike the ellipse which is
+        computed in canonical 512x512 face-space and can bleed past the face
         edge on profile shots.
 
         A forehead extension is added because the 106-pt model only reaches
@@ -1259,7 +1259,7 @@ class ProcessMgr():
         cv2.fillConvexPoly(mask, hull, 255)
 
         # Dilate slightly so the hull doesn't clip skin right at the landmark
-        # boundary â€” especially at jaw/temple edges.
+        # boundary - especially at jaw/temple edges.
         if blend_amount > 0:
             face_w    = max(1, right_x - left_x)
             expand_px = max(1, int(np.sqrt(face_h * face_w) * blend_amount / 400))
@@ -1417,7 +1417,7 @@ class ProcessMgr():
 
     def apply_color_transfer(self, source, target):
         # If source is effectively grayscale (B&W media), skip color transfer.
-        # Chrominance std â‰ˆ 0 causes division explosion â†’ blue artifact.
+        # Chrominance std ~ 0 causes division explosion -> blue artifact.
         src_f = source.astype(np.float32)
         if (np.mean(np.abs(src_f[:, :, 0] - src_f[:, :, 1])) < 5 and
                 np.mean(np.abs(src_f[:, :, 1] - src_f[:, :, 2])) < 5):

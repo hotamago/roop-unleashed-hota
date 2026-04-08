@@ -7,14 +7,14 @@ import roop.config.globals
 RESOLUTION_CHOICES = ["1280x720", "1920x1080", "854x480", "3840x2160"]
 ROTATION_CHOICES   = [
     "None (no change)",
-    "90Â° Clockwise", "90Â° Counter-clockwise",
-    "180Â°",
+    "90 deg Clockwise", "90 deg Counter-clockwise",
+    "180 deg",
     "Flip Horizontal", "Flip Vertical",
 ]
 ROTATE_FILTERS = {
-    "90Â° Clockwise":        ["transpose=1"],
-    "90Â° Counter-clockwise": ["transpose=2"],
-    "180Â°":                  ["vflip", "hflip"],
+    "90 deg Clockwise":        ["transpose=1"],
+    "90 deg Counter-clockwise": ["transpose=2"],
+    "180 deg":                  ["vflip", "hflip"],
     "Flip Horizontal":       ["hflip"],
     "Flip Vertical":         ["vflip"],
 }
@@ -24,9 +24,9 @@ def extras_tab(bt_destfiles=None):
     # State: tracks detected properties of the current file
     file_info = gr.State({"width": 0, "height": 0, "fps": 24.0, "is_video": False})
 
-    with gr.Tab("ðŸŽ‰ Extras"):
+    with gr.Tab("Extras"):
 
-        # â”€â”€ Upload + Preview â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # Upload + preview
         with gr.Row():
             with gr.Column(scale=1):
                 files_to_process = gr.Files(
@@ -43,11 +43,11 @@ def extras_tab(bt_destfiles=None):
                     label="Preview", visible=False, interactive=False,
                 )
 
-        # â”€â”€ Operations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # Resolution / rotate / FPS
         with gr.Row(equal_height=True):
             with gr.Group():
                 gr.Markdown("#### Resolution")
-                current_res_label = gr.Markdown("**Current:** â€”")
+                current_res_label = gr.Markdown("**Current:** -")
                 resize_resolution = gr.Dropdown(
                     RESOLUTION_CHOICES, value=RESOLUTION_CHOICES[0],
                     label="Target", show_label=False,
@@ -62,11 +62,11 @@ def extras_tab(bt_destfiles=None):
 
             with gr.Group(visible=False) as fps_group:
                 gr.Markdown("#### Change FPS")
-                current_fps_label = gr.Markdown("**Current:** â€”")
+                current_fps_label = gr.Markdown("**Current:** -")
                 fps_value = gr.Slider(1, 120, value=30, step=1,
                                       label="Target FPS", show_label=False)
 
-        # â”€â”€ Crop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # Crop
         with gr.Group():
             gr.Markdown("#### Crop  *(trim from each edge as % of frame size)*")
             with gr.Row():
@@ -75,11 +75,10 @@ def extras_tab(bt_destfiles=None):
                 crop_top    = gr.Slider(0, 49, value=0, step=1, label="Top %")
                 crop_bottom = gr.Slider(0, 49, value=0, step=1, label="Bottom %")
 
-        # â”€â”€ Single Apply â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         with gr.Row():
             btn_apply = gr.Button("Apply", variant="primary")
 
-        # â”€â”€ Output preview â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # Output preview
         with gr.Row():
             output_image = gr.Image(
                 label="Output", visible=False, interactive=False,
@@ -91,14 +90,13 @@ def extras_tab(bt_destfiles=None):
 
         with gr.Row():
             send_to_faceswap_btn = gr.Button(
-                "â†— Send to Face Swap", size="sm",
+                "Send to Face Swap", size="sm",
                 visible=bt_destfiles is not None,
             )
 
     # Holds the output path(s) for Send to Face Swap
     output_path_state = gr.State(None)
 
-    # â”€â”€ Event wiring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     files_to_process.clear(
         fn=on_file_clear,
         outputs=[
@@ -142,8 +140,6 @@ def extras_tab(bt_destfiles=None):
         )
 
 
-# â”€â”€ Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
 def on_file_clear():
     hidden = gr.update(visible=False, value=None)
     return hidden, hidden, hidden, hidden, None
@@ -153,9 +149,9 @@ def on_file_upload(files):
     empty = (
         gr.update(visible=False, value=None),
         gr.update(visible=False, value=None),
-        gr.update(value="**Current:** â€”"),
+        gr.update(value="**Current:** -"),
         gr.update(choices=RESOLUTION_CHOICES, value=RESOLUTION_CHOICES[0]),
-        gr.update(value="**Current:** â€”"),
+        gr.update(value="**Current:** -"),
         gr.update(value=30),
         gr.update(visible=False),
         {"width": 0, "height": 0, "fps": 24.0, "is_video": False},
@@ -183,7 +179,7 @@ def on_file_upload(files):
     return (
         gr.update(visible=is_img, value=path if is_img else None),
         gr.update(visible=is_vid, value=path if is_vid else None),
-        gr.update(value=f"**Current:** {w} Ã— {h}"),
+        gr.update(value=f"**Current:** {w} x {h}"),
         gr.update(choices=choices, value=current_res),
         gr.update(value=f"**Current:** {fps:.2f} fps"),
         gr.update(value=round(fps)),
@@ -204,7 +200,7 @@ def on_apply_all(files, resolution, rotation, fps,
     cur_h  = file_info.get("height", 0)
     cur_fps = file_info.get("fps", 24.0)
 
-    # Build vf filter list (order: crop â†’ rotate â†’ scale â†’ fps)
+    # Build vf filter list (order: crop -> rotate -> scale -> fps)
     filters = []
 
     if any(v > 0 for v in [crop_left, crop_right, crop_top, crop_bottom]):

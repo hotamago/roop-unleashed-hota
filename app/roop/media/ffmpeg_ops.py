@@ -117,9 +117,9 @@ def resize_video(input_path: str, output_path: str, width: int, height: int) -> 
 
 def rotate_media(input_path: str, output_path: str, transform: str) -> bool:
     transform_map = {
-        "90Â° Clockwise":        "transpose=1",
-        "90Â° Counter-clockwise": "transpose=2",
-        "180Â°":                  "transpose=1,transpose=1",
+        "90 deg Clockwise":        "transpose=1",
+        "90 deg Counter-clockwise": "transpose=2",
+        "180 deg":                  "transpose=1,transpose=1",
         "Flip Horizontal":       "hflip",
         "Flip Vertical":         "vflip",
     }

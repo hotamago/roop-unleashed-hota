@@ -22,7 +22,7 @@ def settings_tab():
     settings_controls.clear()
     providerlist = suggest_execution_providers()
     initial_memory_status = describe_memory_plan(resolve_memory_plan())
-    with gr.Tab("âš™ Settings"):
+    with gr.Tab("Settings"):
         with gr.Row():
             with gr.Column():
                 settings_controls.append(gr.Checkbox(label="Public Server", value=roop.config.globals.CFG.server_share, elem_id='server_share', interactive=True))

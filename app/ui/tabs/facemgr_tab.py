@@ -15,7 +15,7 @@ images = []
 
 
 def facemgr_tab() -> None:
-    with gr.Tab("ðŸ‘¨â€ðŸ‘©â€ðŸ‘§â€ðŸ‘¦ Face Management"):
+    with gr.Tab("Face Management"):
         with gr.Row():
             gr.Markdown("""
                         # Create blending facesets
@@ -31,7 +31,7 @@ def facemgr_tab() -> None:
             fb_files = gr.Files(label='Input Files', file_count="multiple", file_types=["image", "video"], interactive=True)
         with gr.Row():
             with gr.Column():
-                gr.Button("ðŸ‘€ Open Output Folder", size='sm').click(fn=lambda: util.open_folder(roop.config.globals.output_path))
+                gr.Button("Open Output Folder", size='sm').click(fn=lambda: util.open_folder(roop.config.globals.output_path))
             with gr.Column():
                 gr.Markdown(' ')
         with gr.Row():
