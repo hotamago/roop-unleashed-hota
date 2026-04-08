@@ -1,9 +1,10 @@
-import cv2
+﻿import cv2
 import numpy as np
 
-from roop.typing import Frame
+from roop.processors.base import BaseProcessor
+from roop.config.types import Frame
 
-class Frame_Filter():
+class Frame_Filter(BaseProcessor):
     processorname = 'generic_filter'
     type = 'frame_processor'
 
@@ -102,4 +103,5 @@ class Frame_Filter():
         if self.plugin_options["subtype"] == "C64":
             return (320,200)
         return None
+
 

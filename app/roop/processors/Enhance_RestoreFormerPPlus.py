@@ -1,12 +1,13 @@
-import cv2 
+﻿import cv2 
 import numpy as np
 import onnxruntime
 
-from roop.onnx_runtime import get_execution_providers_for_processor, resolve_model_path_for_processor
-from roop.typing import Face, Frame, FaceSet
-from roop.utilities import resolve_relative_path
+from roop.onnx.runtime import get_execution_providers_for_processor, resolve_model_path_for_processor
+from roop.processors.base import BaseProcessor
+from roop.config.types import Face, Frame, FaceSet
+from roop.utils import resolve_relative_path
 
-class Enhance_RestoreFormerPPlus():
+class Enhance_RestoreFormerPPlus(BaseProcessor):
     plugin_options:dict = None
     model_restoreformerpplus = None
     devicename = None
@@ -129,4 +130,5 @@ class Enhance_RestoreFormerPPlus():
         self.model_restoreformerpplus = None
         del self.io_binding
         self.io_binding = None
+
 

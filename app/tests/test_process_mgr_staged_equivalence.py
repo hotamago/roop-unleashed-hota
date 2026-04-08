@@ -1,9 +1,9 @@
-from types import SimpleNamespace
+﻿from types import SimpleNamespace
 
 import numpy as np
 
-import roop.globals
-from roop.ProcessMgr import ProcessMgr
+import roop.config.globals
+from roop.pipeline.batch_executor import ProcessMgr
 
 
 class FakeSwapProcessor:
@@ -41,13 +41,13 @@ def test_process_mgr_staged_plan_matches_legacy_process_frame(monkeypatch):
         landmark_2d_106=np.zeros((106, 2), dtype=np.float32),
     )
 
-    monkeypatch.setattr("roop.ProcessMgr.get_all_faces", lambda _frame: [detected_face])
-    monkeypatch.setattr("roop.ProcessMgr.compute_cosine_distance", lambda _a, _b: 0.0)
-    monkeypatch.setattr("roop.ProcessMgr.align_crop", lambda frame, _kps, _size: (frame.copy(), np.eye(2, 3, dtype=np.float32)))
+    monkeypatch.setattr("roop.pipeline.batch_executor.get_all_faces", lambda _frame: [detected_face])
+    monkeypatch.setattr("roop.pipeline.batch_executor.compute_cosine_distance", lambda _a, _b: 0.0)
+    monkeypatch.setattr("roop.pipeline.batch_executor.align_crop", lambda frame, _kps, _size: (frame.copy(), np.eye(2, 3, dtype=np.float32)))
     monkeypatch.setattr(ProcessMgr, "paste_upscale", lambda self, fake_face, _upsk_face, _matrix, _target_img, _scale_factor, _mask_offsets, face_landmarks=None: fake_face)
-    monkeypatch.setattr(roop.globals, "autorotate_faces", False, raising=False)
-    monkeypatch.setattr(roop.globals, "vr_mode", False, raising=False)
-    monkeypatch.setattr(roop.globals, "no_face_action", 0, raising=False)
+    monkeypatch.setattr(roop.config.globals, "autorotate_faces", False, raising=False)
+    monkeypatch.setattr(roop.config.globals, "vr_mode", False, raising=False)
+    monkeypatch.setattr(roop.config.globals, "no_face_action", 0, raising=False)
 
     frame = np.full((128, 128, 3), 7, dtype=np.uint8)
 
@@ -76,3 +76,4 @@ def test_process_mgr_staged_plan_matches_legacy_process_frame(monkeypatch):
         )
 
     assert np.array_equal(staged_result, legacy_result)
+

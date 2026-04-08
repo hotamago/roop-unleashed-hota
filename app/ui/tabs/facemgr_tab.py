@@ -1,13 +1,13 @@
-import os
+﻿import os
 import shutil
 import cv2
 import gradio as gr
-import roop.utilities as util
-import roop.globals
-from roop.face_util import extract_face_images
-from roop.capturer import get_video_frame, get_video_frame_total
+import roop.utils as util
+import roop.config.globals
+from roop.face import extract_face_images
+from roop.media.capturer import get_video_frame, get_video_frame_total
 from typing import List, Tuple, Optional
-from roop.typing import Frame, Face, FaceSet
+from roop.config.types import Frame, Face, FaceSet
 
 selected_face_index = -1
 thumbs = []
@@ -15,7 +15,7 @@ images = []
 
 
 def facemgr_tab() -> None:
-    with gr.Tab("👨‍👩‍👧‍👦 Face Management"):
+    with gr.Tab("ðŸ‘¨â€ðŸ‘©â€ðŸ‘§â€ðŸ‘¦ Face Management"):
         with gr.Row():
             gr.Markdown("""
                         # Create blending facesets
@@ -31,7 +31,7 @@ def facemgr_tab() -> None:
             fb_files = gr.Files(label='Input Files', file_count="multiple", file_types=["image", "video"], interactive=True)
         with gr.Row():
             with gr.Column():
-                gr.Button("👀 Open Output Folder", size='sm').click(fn=lambda: util.open_folder(roop.globals.output_path))
+                gr.Button("ðŸ‘€ Open Output Folder", size='sm').click(fn=lambda: util.open_folder(roop.config.globals.output_path))
             with gr.Column():
                 gr.Markdown(' ')
         with gr.Row():
@@ -96,8 +96,8 @@ def on_fb_files_changed(inputfiles, progress=gr.Progress()) -> Tuple[List[Frame]
             slider = gr.Slider(interactive=False)
             video_image = gr.Image(interactive=False)
             cut_button = gr.Button(interactive=False)
-            roop.globals.source_path = source_path
-            SELECTION_FACES_DATA = extract_face_images(roop.globals.source_path,  (False, 0), 0.5)
+            roop.config.globals.source_path = source_path
+            SELECTION_FACES_DATA = extract_face_images(roop.config.globals.source_path,  (False, 0), 0.5)
             for f in SELECTION_FACES_DATA:
                 image = f[1]
                 images.append(image)
@@ -178,10 +178,11 @@ def on_update_clicked() -> Optional[str]:
 
     imgnames = []
     for index,img in enumerate(images):
-        filename = os.path.join(roop.globals.output_path, f'{index}.png')
+        filename = os.path.join(roop.config.globals.output_path, f'{index}.png')
         cv2.imwrite(filename, img)
         imgnames.append(filename)
 
-    finalzip = os.path.join(roop.globals.output_path, 'faceset.fsz')        
+    finalzip = os.path.join(roop.config.globals.output_path, 'faceset.fsz')        
     util.zip(imgnames, finalzip)
     return finalzip
+

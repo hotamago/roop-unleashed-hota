@@ -1,12 +1,12 @@
-import os
+﻿import os
 import shutil
 import time
 import warnings
 import gradio as gr
-import roop.globals
-import roop.metadata
-import roop.utilities as util
-from roop.cache_paths import get_gradio_temp_root
+import roop.config.globals
+import roop.config as roop_config
+import roop.utils as util
+from roop.utils.cache_paths import get_gradio_temp_root
 import ui.globals as uii
 import ui.globals
 
@@ -15,61 +15,62 @@ from ui.tabs.facemgr_tab import facemgr_tab
 from ui.tabs.extras_tab import extras_tab
 from ui.tabs.settings_tab import settings_tab
 
-roop.globals.keep_fps = None
-roop.globals.keep_frames = None
-roop.globals.skip_audio = None
-roop.globals.use_batch = None
+roop.config.globals.keep_fps = None
+roop.config.globals.keep_frames = None
+roop.config.globals.skip_audio = None
+roop.config.globals.use_batch = None
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 def prepare_environment():
-    roop.globals.output_path = os.path.abspath(os.path.join(os.getcwd(), "output"))
-    os.makedirs(roop.globals.output_path, exist_ok=True)
-    if not roop.globals.CFG.use_os_temp_folder:
+    roop.config.globals.output_path = os.path.abspath(os.path.join(os.getcwd(), "output"))
+    os.makedirs(roop.config.globals.output_path, exist_ok=True)
+    if not roop.config.globals.CFG.use_os_temp_folder:
         os.environ["TEMP"] = os.environ["TMP"] = os.path.abspath(os.path.join(os.getcwd(), "temp"))
     os.makedirs(os.environ["TEMP"], exist_ok=True)
     os.environ["GRADIO_TEMP_DIR"] = str(get_gradio_temp_root())
     os.environ['GRADIO_ANALYTICS_ENABLED'] = '0'
 
 def run():
-    from roop.core import decode_execution_providers, set_display_ui
+    from roop.core.app import set_display_ui
+    from roop.core.providers import decode_execution_providers
 
     prepare_environment()
 
     set_display_ui(show_msg)
-    if roop.globals.CFG.provider in ("cuda", "tensorrt") and util.has_cuda_device() == False:
-       roop.globals.CFG.provider = "cpu"
+    if roop.config.globals.CFG.provider in ("cuda", "tensorrt") and util.has_cuda_device() == False:
+       roop.config.globals.CFG.provider = "cpu"
 
     # If TensorRT is selected, verify its runtime DLLs are actually loadable.
     # onnxruntime lists TensorrtExecutionProvider as "available" even when the
     # TensorRT runtime libraries (nvinfer.dll etc.) are missing from the system.
     # Attempting to use it then produces error 126 and falls back silently to CPU,
     # losing all GPU acceleration.  Detect this early and fall back to CUDA instead.
-    if roop.globals.CFG.provider == "tensorrt":
+    if roop.config.globals.CFG.provider == "tensorrt":
         _trt_ok = False
         try:
-            import tensorrt  # noqa: F401 – presence means DLLs are registered
+            import tensorrt  # noqa: F401 â€“ presence means DLLs are registered
             _trt_ok = True
         except ImportError:
             pass
         if not _trt_ok:
-            print("TensorRT runtime libraries not found – falling back to CUDA provider.")
-            roop.globals.CFG.provider = "cuda"
+            print("TensorRT runtime libraries not found â€“ falling back to CUDA provider.")
+            roop.config.globals.CFG.provider = "cuda"
 
-    roop.globals.execution_providers = decode_execution_providers([roop.globals.CFG.provider])
+    roop.config.globals.execution_providers = decode_execution_providers([roop.config.globals.CFG.provider])
     gputype = util.get_device()
     if gputype == 'cuda':
         util.print_cuda_info()
         
-    print(f'Using provider {roop.globals.execution_providers} - Device:{gputype}')
+    print(f'Using provider {roop.config.globals.execution_providers} - Device:{gputype}')
     
     run_server = True
     uii.ui_restart_server = False
     mycss = """
-    /* ════════════════════════════════════════════════════════════════════════
-       CARBON DARK  –  roop-unleashed UI theme
-       Surface scale (deep → elevated):
+    /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+       CARBON DARK  â€“  roop-unleashed UI theme
+       Surface scale (deep â†’ elevated):
          #0d0d0d  page / body
          #151515  app container
          #1c1c1c  block / card surfaces
@@ -85,7 +86,7 @@ def run():
          #2e6645  primary button hover
        Danger:
          #7a2020  stop/cancel fill  |  #9a2a2a  hover
-    ════════════════════════════════════════════════════════════════════════ */
+    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
     :root, .dark {
         color-scheme: dark !important;
@@ -182,7 +183,7 @@ def run():
         --neutral-950: #0d0d0d;
     }
 
-    /* ── Page & container ── */
+    /* â”€â”€ Page & container â”€â”€ */
     html, body { background: #0d0d0d !important; color: #eeeeee !important; }
     .gradio-container, .gradio-container.dark {
         background: #0d0d0d !important;
@@ -190,7 +191,7 @@ def run():
         max-width: 100% !important;
     }
 
-    /* ── Blocks / cards ── */
+    /* â”€â”€ Blocks / cards â”€â”€ */
     .block, .panel, fieldset, .form {
         background: #1c1c1c !important;
         border: 1px solid #383838 !important;
@@ -201,7 +202,7 @@ def run():
     .block:hover { border-color: #484848 !important; }
     .gap, .contain, .tabs { background: #151515 !important; border: none !important; }
 
-    /* ── Labels & text ── */
+    /* â”€â”€ Labels & text â”€â”€ */
     .block-label, .block > .label-wrap > span,
     .block > label > span, label > span {
         color: #999999 !important;
@@ -214,7 +215,7 @@ def run():
     .block div  { color: #eeeeee !important; }
     .block .info, .block .description { color: #999999 !important; font-size: 0.82rem !important; }
 
-    /* ── Inputs ── */
+    /* â”€â”€ Inputs â”€â”€ */
     input:not([type=range]):not([type=checkbox]):not([type=radio]), textarea, select {
         background: #2c2c2c !important;
         border: 1px solid #383838 !important;
@@ -233,7 +234,7 @@ def run():
     }
     ::placeholder { color: #555555 !important; opacity: 1; }
 
-    /* ── Dropdowns ── */
+    /* â”€â”€ Dropdowns â”€â”€ */
     .wrap, ul.options {
         background: #2c2c2c !important;
         border: 1px solid #383838 !important;
@@ -250,7 +251,7 @@ def run():
     ul.options li:hover    { background: #3d8059 !important; color: #f0f0f0 !important; }
     ul.options li.selected { background: #2e6645 !important; color: #f0f0f0 !important; }
 
-    /* ── Buttons ── */
+    /* â”€â”€ Buttons â”€â”€ */
     button {
         border-radius: 6px !important;
         font-weight: 500 !important;
@@ -292,7 +293,7 @@ def run():
         border-color: #9a2a2a !important;
     }
 
-    /* ── Sliders ── */
+    /* â”€â”€ Sliders â”€â”€ */
     input[type=range] { accent-color: #50a070; }
     input[type=range]::-webkit-slider-thumb {
         background: #50a070 !important;
@@ -302,7 +303,7 @@ def run():
     input[type=range]::-moz-range-thumb            { background: #50a070 !important; }
     input[type=range]::-webkit-slider-runnable-track { background: #2c2c2c !important; }
 
-    /* ── Checkboxes – native rendering for reliable checked state ── */
+    /* â”€â”€ Checkboxes â€“ native rendering for reliable checked state â”€â”€ */
     input[type=checkbox] {
         appearance: auto !important;
         -webkit-appearance: checkbox !important;
@@ -318,7 +319,7 @@ def run():
     input[type=checkbox]:hover { transform: scale(1.1) !important; }
     input[type=radio]  { accent-color: #50a070; }
 
-    /* ── Upload / drop zones ── */
+    /* â”€â”€ Upload / drop zones â”€â”€ */
     .upload-container, .file-preview, .drop-container {
         background: #1c1c1c !important;
         border: 2px dashed #383838 !important;
@@ -331,7 +332,7 @@ def run():
         background: rgba(80,160,112,0.04) !important;
     }
 
-    /* ── Gallery ── */
+    /* â”€â”€ Gallery â”€â”€ */
     .gallery, .gallery-container, .grid-container { background: #181818 !important; }
     .gallery-item, .thumbnail-item {
         border: 1px solid #383838 !important;
@@ -345,14 +346,14 @@ def run():
         transform: translateY(-2px) !important;
     }
 
-    /* ── Header bar ── */
+    /* â”€â”€ Header bar â”€â”€ */
     .compact {
         background: #111111 !important;
         border-bottom: 1px solid #272727 !important;
         padding: 6px 12px !important;
     }
 
-    /* ── Tab bar ── */
+    /* â”€â”€ Tab bar â”€â”€ */
     .tab-nav {
         background: #111111 !important;
         border-bottom: 1px solid #272727 !important;
@@ -383,7 +384,7 @@ def run():
         transform: none !important;
     }
 
-    /* ── Accordion headers ── */
+    /* â”€â”€ Accordion headers â”€â”€ */
     .label-wrap {
         background: #242424 !important;
         border: 1px solid #383838 !important;
@@ -394,20 +395,20 @@ def run():
     .label-wrap:hover { background: #2c2c2c !important; border-color: #484848 !important; }
     .label-wrap span  { color: #eeeeee !important; font-weight: 500 !important; }
 
-    /* ── Scrollbars ── */
+    /* â”€â”€ Scrollbars â”€â”€ */
     ::-webkit-scrollbar       { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #181818; border-radius: 3px; }
     ::-webkit-scrollbar-thumb { background: #383838; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #50a070; }
 
-    /* ── Progress / generating ── */
+    /* â”€â”€ Progress / generating â”€â”€ */
     .progress-bar {
         background: linear-gradient(90deg, #3d8059, #50a070) !important;
         border-radius: 3px !important;
     }
     .generating { border-color: #50a070 !important; }
 
-    /* ── Toasts ── */
+    /* â”€â”€ Toasts â”€â”€ */
     /* The wrapper is always in the DOM; keep it invisible when empty */
     .toast-wrap {
         background: transparent !important;
@@ -424,7 +425,7 @@ def run():
     .toast-title { color: #eeeeee !important; font-weight: 600 !important; }
     .toast-text  { color: #999999 !important; }
 
-    /* ── Markdown / prose ── */
+    /* â”€â”€ Markdown / prose â”€â”€ */
     .prose, .prose p, .prose li { color: #eeeeee !important; }
     .prose a       { color: #50a070 !important; }
     .prose a:hover { color: #6dba8a !important; }
@@ -436,7 +437,7 @@ def run():
         padding: 1px 5px !important;
     }
 
-    /* ── Preserved layout rules ── */
+    /* â”€â”€ Preserved layout rules â”€â”€ */
     span { color: var(--block-info-text-color) }
     /* Remove the visible block border from the version-info HTML element */
     #versions { border: none !important; background: transparent !important; }
@@ -458,18 +459,18 @@ def run():
                 os.makedirs(gradio_temp, exist_ok=True)
         except Exception:
             pass
-        server_name = roop.globals.CFG.server_name
+        server_name = roop.config.globals.CFG.server_name
         if server_name is None or len(server_name) < 1:
             server_name = None
-        server_port = roop.globals.CFG.server_port
+        server_port = roop.config.globals.CFG.server_port
         if server_port <= 0:
             server_port = None
         ssl_verify = True
-        with gr.Blocks(title=f'{roop.metadata.name} {roop.metadata.version}', theme=gr.themes.Base(), css=mycss, delete_cache=(60, 86400)) as ui:
+        with gr.Blocks(title=f'{roop_config.name} {roop_config.version}', theme=gr.themes.Base(), css=mycss, delete_cache=(60, 86400)) as ui:
             with gr.Row(variant='compact'):
                     gr.HTML(util.create_version_html(), elem_id="versions")
-                    bt_save_session = gr.Button("💾 Save Settings", size='sm', variant='primary', scale=0)
-                    bt_load_session = gr.Button("📂 Load Settings", size='sm', scale=0)
+                    bt_save_session = gr.Button("ðŸ’¾ Save Settings", size='sm', variant='primary', scale=0)
+                    bt_load_session = gr.Button("ðŸ“‚ Load Settings", size='sm', scale=0)
             bt_destfiles = faceswap_tab()
             facemgr_tab()
             extras_tab(bt_destfiles)
@@ -478,11 +479,11 @@ def run():
             _comps = _session_components()
             bt_save_session.click(fn=save_session, inputs=_comps, outputs=[])
             bt_load_session.click(fn=load_session, inputs=[], outputs=_comps)
-        launch_browser = roop.globals.CFG.launch_browser
+        launch_browser = roop.config.globals.CFG.launch_browser
 
         uii.ui_restart_server = False
         try:
-            ui.queue().launch(inbrowser=launch_browser, server_name=server_name, server_port=server_port, share=roop.globals.CFG.server_share, ssl_verify=ssl_verify, prevent_thread_lock=True, show_error=True)
+            ui.queue().launch(inbrowser=launch_browser, server_name=server_name, server_port=server_port, share=roop.config.globals.CFG.server_share, ssl_verify=ssl_verify, prevent_thread_lock=True, show_error=True)
         except Exception as e:
             print(f'Exception {e} when launching Gradio Server!')
             uii.ui_restart_server = True
@@ -541,7 +542,7 @@ def _session_components():
 
 
 def save_session(*values):
-    cfg = roop.globals.CFG
+    cfg = roop.config.globals.CFG
     for key, val in zip(_SESSION_CFG_KEYS, values):
         setattr(cfg, key, val)
     cfg.save()
@@ -549,7 +550,8 @@ def save_session(*values):
 
 
 def load_session():
-    roop.globals.CFG.load()
-    cfg = roop.globals.CFG
+    roop.config.globals.CFG.load()
+    cfg = roop.config.globals.CFG
     return tuple(getattr(cfg, key) for key in _SESSION_CFG_KEYS)
+
 

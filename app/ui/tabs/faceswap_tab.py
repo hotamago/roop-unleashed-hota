@@ -1,4 +1,4 @@
-import copy
+﻿import copy
 import hashlib
 import os
 import json
@@ -6,28 +6,28 @@ import shutil
 import time
 import gradio as gr
 import numpy as np
-import roop.utilities as util
-import roop.globals
+import roop.utils as util
+import roop.config.globals
 import ui.globals
-from roop.cache_paths import get_gradio_temp_root
-from roop.face_util import extract_face_images, create_blank_image
-from roop.capturer import get_video_frame, get_video_frame_total, get_image_frame
-from roop.ProcessEntry import ProcessEntry
-from roop.ProcessOptions import ProcessOptions
-from roop.FaceSet import FaceSet
-from roop.progress_status import get_processing_status_markdown, set_memory_status, set_processing_message, start_processing_status
+from roop.utils.cache_paths import get_gradio_temp_root
+from roop.face import extract_face_images, create_blank_image
+from roop.media.capturer import get_video_frame, get_video_frame_total, get_image_frame
+from roop.pipeline.entry import ProcessEntry
+from roop.pipeline.options import ProcessOptions
+from roop.pipeline.faceset import FaceSet
+from roop.progress.status import get_processing_status_markdown, set_memory_status, set_processing_message, start_processing_status
 
 last_image = None
 
 
 def sync_resume_processing_cache_id(resume_path) -> None:
-    """processing_cache/jobs/<stem>/… uses the resume JSON basename stem (stable human-visible id)."""
+    """processing_cache/jobs/<stem>/â€¦ uses the resume JSON basename stem (stable human-visible id)."""
     if not resume_path:
-        roop.globals.active_resume_cache_id = None
+        roop.config.globals.active_resume_cache_id = None
         return
     base = os.path.basename(os.path.normpath(str(resume_path)))
     stem, _ext = os.path.splitext(base)
-    roop.globals.active_resume_cache_id = stem if stem else None
+    roop.config.globals.active_resume_cache_id = stem if stem else None
 
 
 SELECTED_INPUT_FACE_INDEX = 0
@@ -272,9 +272,9 @@ def serialize_process_entries(entries):
 
 def snapshot_input_face_refs():
     refs = []
-    if len(ui.globals.ui_input_face_refs) < len(roop.globals.INPUT_FACESETS):
+    if len(ui.globals.ui_input_face_refs) < len(roop.config.globals.INPUT_FACESETS):
         raise ValueError("Current source inputs are missing resume metadata. Re-add the source files once before running.")
-    for index, face_set in enumerate(roop.globals.INPUT_FACESETS):
+    for index, face_set in enumerate(roop.config.globals.INPUT_FACESETS):
         base_ref = dict(ui.globals.ui_input_face_refs[index])
         if not base_ref.get("path"):
             raise ValueError("A source input is missing its source path. Re-add the source files before running.")
@@ -292,16 +292,16 @@ def snapshot_input_face_refs():
 
 def snapshot_target_face_refs():
     refs = []
-    if len(roop.globals.TARGET_FACES) > 0 and len(ui.globals.ui_target_face_refs) < len(roop.globals.TARGET_FACES):
+    if len(roop.config.globals.TARGET_FACES) > 0 and len(ui.globals.ui_target_face_refs) < len(roop.config.globals.TARGET_FACES):
         raise ValueError("Current selected target faces are missing resume metadata. Re-add them from preview before running.")
-    for index in range(min(len(ui.globals.ui_target_face_refs), len(roop.globals.TARGET_FACES))):
+    for index in range(min(len(ui.globals.ui_target_face_refs), len(roop.config.globals.TARGET_FACES))):
         base_ref = dict(ui.globals.ui_target_face_refs[index])
         if not base_ref.get("path"):
             continue
         base_ref["path"] = os.path.abspath(base_ref["path"])
         base_ref["frame_number"] = int(base_ref.get("frame_number", 0) or 0)
         base_ref["face_index"] = int(base_ref.get("face_index", 0) or 0)
-        face_embedding = get_face_embedding_vector(roop.globals.TARGET_FACES[index])
+        face_embedding = get_face_embedding_vector(roop.config.globals.TARGET_FACES[index])
         if face_embedding is not None:
             base_ref["face_embedding"] = face_embedding.tolist()
         file_signature = get_target_file_signature(base_ref, "path")
@@ -389,7 +389,7 @@ def get_resume_job_signature(payload):
 def pick_resume_job_key_for_write(prior_disk: dict | None, payload: dict) -> str:
     """
     Keep the same resume_job_key JSON field when job identity (sources/targets/selection) is unchanged.
-    (Job folders are keyed by resume JSON stem + target file id — see active_resume_cache_id.)
+    (Job folders are keyed by resume JSON stem + target file id â€” see active_resume_cache_id.)
     """
     if isinstance(prior_disk, dict):
         old_jk = prior_disk.get("resume_job_key")
@@ -586,23 +586,23 @@ def write_resume_payload(payload):
 def get_resume_settings_from_payload(payload):
     settings = dict(payload.get("settings") or {})
     return {
-        "output_method": settings.get("output_method", roop.globals.CFG.output_method),
-        "enhancer": settings.get("enhancer", roop.globals.CFG.selected_enhancer),
-        "detection": settings.get("detection", roop.globals.CFG.face_detection_mode),
-        "keep_frames": bool(settings.get("keep_frames", roop.globals.CFG.keep_frames)),
-        "wait_after_extraction": bool(settings.get("wait_after_extraction", roop.globals.CFG.wait_after_extraction)),
-        "skip_audio": bool(settings.get("skip_audio", roop.globals.CFG.skip_audio)),
-        "face_distance": float(settings.get("face_distance", roop.globals.CFG.max_face_distance)),
-        "blend_ratio": float(settings.get("blend_ratio", roop.globals.CFG.blend_ratio)),
-        "selected_mask_engine": settings.get("selected_mask_engine", roop.globals.CFG.mask_engine),
-        "clip_text": settings.get("clip_text", roop.globals.CFG.mask_clip_text),
-        "processing_method": settings.get("processing_method", roop.globals.CFG.video_swapping_method),
-        "no_face_action": settings.get("no_face_action", roop.globals.CFG.no_face_action),
-        "vr_mode": bool(settings.get("vr_mode", roop.globals.CFG.vr_mode)),
-        "autorotate": bool(settings.get("autorotate", roop.globals.CFG.autorotate_faces)),
-        "restore_original_mouth": bool(settings.get("restore_original_mouth", roop.globals.CFG.restore_original_mouth)),
-        "num_swap_steps": int(settings.get("num_swap_steps", roop.globals.CFG.num_swap_steps)),
-        "upsample": settings.get("upsample", roop.globals.CFG.subsample_upscale),
+        "output_method": settings.get("output_method", roop.config.globals.CFG.output_method),
+        "enhancer": settings.get("enhancer", roop.config.globals.CFG.selected_enhancer),
+        "detection": settings.get("detection", roop.config.globals.CFG.face_detection_mode),
+        "keep_frames": bool(settings.get("keep_frames", roop.config.globals.CFG.keep_frames)),
+        "wait_after_extraction": bool(settings.get("wait_after_extraction", roop.config.globals.CFG.wait_after_extraction)),
+        "skip_audio": bool(settings.get("skip_audio", roop.config.globals.CFG.skip_audio)),
+        "face_distance": float(settings.get("face_distance", roop.config.globals.CFG.max_face_distance)),
+        "blend_ratio": float(settings.get("blend_ratio", roop.config.globals.CFG.blend_ratio)),
+        "selected_mask_engine": settings.get("selected_mask_engine", roop.config.globals.CFG.mask_engine),
+        "clip_text": settings.get("clip_text", roop.config.globals.CFG.mask_clip_text),
+        "processing_method": settings.get("processing_method", roop.config.globals.CFG.video_swapping_method),
+        "no_face_action": settings.get("no_face_action", roop.config.globals.CFG.no_face_action),
+        "vr_mode": bool(settings.get("vr_mode", roop.config.globals.CFG.vr_mode)),
+        "autorotate": bool(settings.get("autorotate", roop.config.globals.CFG.autorotate_faces)),
+        "restore_original_mouth": bool(settings.get("restore_original_mouth", roop.config.globals.CFG.restore_original_mouth)),
+        "num_swap_steps": int(settings.get("num_swap_steps", roop.config.globals.CFG.num_swap_steps)),
+        "upsample": settings.get("upsample", roop.config.globals.CFG.subsample_upscale),
     }
 
 
@@ -622,7 +622,7 @@ def clear_input_face_state():
     global SELECTED_INPUT_FACE_INDEX
     ui.globals.ui_input_thumbs.clear()
     ui.globals.ui_input_face_refs.clear()
-    roop.globals.INPUT_FACESETS.clear()
+    roop.config.globals.INPUT_FACESETS.clear()
     SELECTED_INPUT_FACE_INDEX = 0
 
 
@@ -630,7 +630,7 @@ def clear_target_face_state():
     global SELECTED_TARGET_FACE_INDEX
     ui.globals.ui_target_thumbs.clear()
     ui.globals.ui_target_face_refs.clear()
-    roop.globals.TARGET_FACES.clear()
+    roop.config.globals.TARGET_FACES.clear()
     SELECTED_TARGET_FACE_INDEX = 0
 
 
@@ -663,7 +663,7 @@ def append_faceset_source(source_path, source_ref):
     if len(face_set.faces) > 1:
         face_set.AverageEmbeddings()
     face_set.faces[0].mask_offsets = list(source_ref.get("mask_offsets", default_mask_offsets()))
-    roop.globals.INPUT_FACESETS.append(face_set)
+    roop.config.globals.INPUT_FACESETS.append(face_set)
     ui.globals.ui_input_face_refs.append(dict(source_ref))
 
 
@@ -676,7 +676,7 @@ def append_image_source(source_path, source_ref):
     face = selection_faces_data[face_index][0]
     face.mask_offsets = list(source_ref.get("mask_offsets", default_mask_offsets()))
     face_set.faces.append(face)
-    roop.globals.INPUT_FACESETS.append(face_set)
+    roop.config.globals.INPUT_FACESETS.append(face_set)
     ui.globals.ui_input_thumbs.append(util.convert_to_gradio(selection_faces_data[face_index][1]))
     ui.globals.ui_input_face_refs.append(dict(source_ref))
 
@@ -703,7 +703,7 @@ def restore_input_faces_from_resume(source_refs):
             append_faceset_source(source_path, restored_ref)
         else:
             append_image_source(source_path, restored_ref)
-    if len(roop.globals.INPUT_FACESETS) < 1:
+    if len(roop.config.globals.INPUT_FACESETS) < 1:
         raise ValueError("The resume file did not restore any source faces.")
 
 
@@ -719,7 +719,7 @@ def append_target_face_from_resume(face_ref):
     face_index = select_target_face_index_from_resume(faces_data, face_ref)
     if face_index < 0 or face_index >= len(faces_data):
         raise ValueError(f"Target face index {face_index} is out of range for {target_path}")
-    roop.globals.TARGET_FACES.append(faces_data[face_index][0])
+    roop.config.globals.TARGET_FACES.append(faces_data[face_index][0])
     ui.globals.ui_target_thumbs.append(util.convert_to_gradio(faces_data[face_index][1]))
     restored_ref = dict(face_ref)
     restored_ref["path"] = target_path
@@ -807,8 +807,8 @@ def get_selected_input_mask_values(face_index=None):
     if face_index is None:
         face_index = SELECTED_INPUT_FACE_INDEX
     offsets = list(default_mask_offsets())
-    if 0 <= face_index < len(roop.globals.INPUT_FACESETS):
-        face = roop.globals.INPUT_FACESETS[face_index].faces[0]
+    if 0 <= face_index < len(roop.config.globals.INPUT_FACESETS):
+        face = roop.config.globals.INPUT_FACESETS[face_index].faces[0]
         offsets = list(getattr(face, "mask_offsets", offsets))
     while len(offsets) < 10:
         offsets.append(1.0)
@@ -819,9 +819,9 @@ def load_resume_into_runtime(resume_path):
     global selected_preview_index, SELECTED_INPUT_FACE_INDEX, SELECTED_TARGET_FACE_INDEX
 
     payload = read_resume_payload(resume_path)
-    roop.globals.active_resume_key = get_resume_payload_signature(payload)
+    roop.config.globals.active_resume_key = get_resume_payload_signature(payload)
     # Must match JSON + existing jobs folder; recomputing can drift on float/path noise.
-    roop.globals.active_resume_job_key = payload.get("resume_job_key") or get_resume_job_signature(payload)
+    roop.config.globals.active_resume_job_key = payload.get("resume_job_key") or get_resume_job_signature(payload)
     restore_input_faces_from_resume(payload.get("sources") or [])
     target_paths = restore_process_entries((payload.get("targets") or {}).get("files") or [])
     restore_target_faces_from_resume((payload.get("targets") or {}).get("selected_faces") or [])
@@ -831,17 +831,17 @@ def load_resume_into_runtime(resume_path):
     selected_preview_index = max(0, min(selected_preview_index, len(target_paths) - 1))
     SELECTED_INPUT_FACE_INDEX = int((payload.get("selection") or {}).get("input_face_index", 0) or 0)
     SELECTED_TARGET_FACE_INDEX = int((payload.get("selection") or {}).get("target_face_index", 0) or 0)
-    SELECTED_INPUT_FACE_INDEX = max(0, min(SELECTED_INPUT_FACE_INDEX, len(roop.globals.INPUT_FACESETS) - 1))
-    if len(roop.globals.TARGET_FACES) > 0:
-        SELECTED_TARGET_FACE_INDEX = max(0, min(SELECTED_TARGET_FACE_INDEX, len(roop.globals.TARGET_FACES) - 1))
+    SELECTED_INPUT_FACE_INDEX = max(0, min(SELECTED_INPUT_FACE_INDEX, len(roop.config.globals.INPUT_FACESETS) - 1))
+    if len(roop.config.globals.TARGET_FACES) > 0:
+        SELECTED_TARGET_FACE_INDEX = max(0, min(SELECTED_TARGET_FACE_INDEX, len(roop.config.globals.TARGET_FACES) - 1))
     else:
         SELECTED_TARGET_FACE_INDEX = 0
-    roop.globals.target_path = target_paths[selected_preview_index] if target_paths else None
+    roop.config.globals.target_path = target_paths[selected_preview_index] if target_paths else None
     slider, frame_text = on_destfiles_selected(None)
     ui.globals.ui_resume_last_path = payload["__path__"]
     ui.globals.ui_resume_bound_path = payload["__path__"]
     sync_resume_processing_cache_id(payload["__path__"])
-    summary = f"Loaded {len(roop.globals.INPUT_FACESETS)} source face(s), {len(target_paths)} target file(s), {len(roop.globals.TARGET_FACES)} selected target face(s)"
+    summary = f"Loaded {len(roop.config.globals.INPUT_FACESETS)} source face(s), {len(target_paths)} target file(s), {len(roop.config.globals.TARGET_FACES)} selected target face(s)"
     return {
         "payload": payload,
         "settings": settings,
@@ -952,7 +952,7 @@ def rebuild_process_entries(destfiles):
 def faceswap_tab():
     global no_face_choices, previewimage
 
-    with gr.Tab("🎭 Face Swap"):
+    with gr.Tab("ðŸŽ­ Face Swap"):
         with gr.Row(variant='panel'):
             bt_srcfiles = gr.Files(label='Source Images or Facesets', file_count="multiple", file_types=["image", ".fsz"], elem_id='filelist', height=233)
             bt_destfiles = gr.Files(label='Target File(s)', file_count="multiple", file_types=["image", "video"], elem_id='filelist', height=233)
@@ -979,66 +979,66 @@ def faceswap_tab():
                     input_faces = gr.Gallery(label="Input faces gallery", allow_preview=False, preview=False, height=None, columns=2, object_fit="contain", interactive=False)
                     target_faces = gr.Gallery(label="Target faces gallery", allow_preview=False, preview=False, height=None, columns=2, object_fit="contain", interactive=False)
                 with gr.Row():
-                    bt_move_left_input = gr.Button("⬅ Move left", size='sm')
-                    bt_move_right_input = gr.Button("➡ Move right", size='sm')
-                    bt_move_left_target = gr.Button("⬅ Move left", size='sm')
-                    bt_move_right_target = gr.Button("➡ Move right", size='sm')
+                    bt_move_left_input = gr.Button("â¬… Move left", size='sm')
+                    bt_move_right_input = gr.Button("âž¡ Move right", size='sm')
+                    bt_move_left_target = gr.Button("â¬… Move left", size='sm')
+                    bt_move_right_target = gr.Button("âž¡ Move right", size='sm')
                 with gr.Row():
-                    bt_remove_selected_input_face = gr.Button("❌ Remove selected", size='sm')
-                    bt_clear_input_faces = gr.Button("💥 Clear all", variant='stop', size='sm')
-                    bt_remove_selected_target_face = gr.Button("❌ Remove selected", size='sm')
+                    bt_remove_selected_input_face = gr.Button("âŒ Remove selected", size='sm')
+                    bt_clear_input_faces = gr.Button("ðŸ’¥ Clear all", variant='stop', size='sm')
+                    bt_remove_selected_target_face = gr.Button("âŒ Remove selected", size='sm')
 
                 with gr.Row():
                     with gr.Column():
                         chk_showmaskoffsets = gr.Checkbox(
                             label="Show mask overlay in preview",
-                            value=roop.globals.CFG.show_mask_offsets,
+                            value=roop.config.globals.CFG.show_mask_offsets,
                             interactive=True,
                         )
                         chk_restoreoriginalmouth = gr.Checkbox(
                             label="Restore original mouth area",
-                            value=roop.globals.CFG.restore_original_mouth,
+                            value=roop.config.globals.CFG.restore_original_mouth,
                             interactive=True,
                         )
                         mask_top = gr.Slider(
-                            0, 2.0, value=roop.globals.CFG.mask_top,
+                            0, 2.0, value=roop.config.globals.CFG.mask_top,
                             label="Offset Face Top", step=0.01, interactive=True,
                         )
                         mask_bottom = gr.Slider(
-                            0, 2.0, value=roop.globals.CFG.mask_bottom,
+                            0, 2.0, value=roop.config.globals.CFG.mask_bottom,
                             label="Offset Face Bottom", step=0.01, interactive=True,
                         )
                         mask_left = gr.Slider(
-                            0, 2.0, value=roop.globals.CFG.mask_left,
+                            0, 2.0, value=roop.config.globals.CFG.mask_left,
                             label="Offset Face Left", step=0.01, interactive=True,
                         )
                         mask_right = gr.Slider(
-                            0, 2.0, value=roop.globals.CFG.mask_right,
+                            0, 2.0, value=roop.config.globals.CFG.mask_right,
                             label="Offset Face Right", step=0.01, interactive=True,
                         )
                         face_mask_blend = gr.Slider(
-                            0, 200, value=roop.globals.CFG.face_mask_blend,
+                            0, 200, value=roop.config.globals.CFG.face_mask_blend,
                             label="Face Mask Edge Blend", step=1, interactive=True,
                         )
                     with gr.Column():
                         mouth_top_scale = gr.Slider(
-                            0, 2.0, value=roop.globals.CFG.mouth_top_scale,
+                            0, 2.0, value=roop.config.globals.CFG.mouth_top_scale,
                             label="Mouth Mask Top", step=0.01, interactive=True,
                         )
                         mouth_bottom_scale = gr.Slider(
-                            0, 2.0, value=roop.globals.CFG.mouth_bottom_scale,
+                            0, 2.0, value=roop.config.globals.CFG.mouth_bottom_scale,
                             label="Mouth Mask Bottom", step=0.01, interactive=True,
                         )
                         mouth_left_scale = gr.Slider(
-                            0, 2.0, value=roop.globals.CFG.mouth_left_scale,
+                            0, 2.0, value=roop.config.globals.CFG.mouth_left_scale,
                             label="Mouth Mask Left", step=0.01, interactive=True,
                         )
                         mouth_right_scale = gr.Slider(
-                            0, 2.0, value=roop.globals.CFG.mouth_right_scale,
+                            0, 2.0, value=roop.config.globals.CFG.mouth_right_scale,
                             label="Mouth Mask Right", step=0.01, interactive=True,
                         )
                         mouth_mask_blend = gr.Slider(
-                            0, 200, value=roop.globals.CFG.mouth_mask_blend,
+                            0, 200, value=roop.config.globals.CFG.mouth_mask_blend,
                             label="Mouth Mask Edge Blend", step=1, interactive=True,
                         )
                         bt_toggle_masking = gr.Button(
@@ -1046,16 +1046,16 @@ def faceswap_tab():
                         )
                         selected_mask_engine = gr.Dropdown(
                             ["None", "Clip2Seg", "DFL XSeg"],
-                            value=roop.globals.CFG.mask_engine,
+                            value=roop.config.globals.CFG.mask_engine,
                             label="Face masking engine",
                         )
                         clip_text = gr.Textbox(
                             label="List of objects to mask and restore back on fake face",
-                            value=roop.globals.CFG.mask_clip_text,
-                            interactive=roop.globals.CFG.mask_engine == "Clip2Seg",
+                            value=roop.config.globals.CFG.mask_clip_text,
+                            interactive=roop.config.globals.CFG.mask_engine == "Clip2Seg",
                         )
                         bt_preview_mask = gr.Button(
-                            "👥 Show Mask Preview", variant="secondary"
+                            "ðŸ‘¥ Show Mask Preview", variant="secondary"
                         )
 
             with gr.Column(scale=2):
@@ -1064,50 +1064,50 @@ def faceswap_tab():
                                              brush=gr.Brush(color_mode="fixed", colors=["rgba(255, 255, 255, 1"]), interactive=True, visible=False)
                 with gr.Row(variant='panel'):
                     fake_preview = gr.Checkbox(label="Face swap frames", value=False)
-                    bt_refresh_preview = gr.Button("🔄 Refresh", variant='secondary', size='sm')
+                    bt_refresh_preview = gr.Button("ðŸ”„ Refresh", variant='secondary', size='sm')
                     bt_use_face_from_preview = gr.Button("Use Face from this Frame", variant='primary', size='sm')
                 with gr.Row():
                     preview_frame_num = gr.Slider(1, 1, value=1, label="Frame Number", info='0:00:00', step=1.0, interactive=True)
                 with gr.Row():
                     text_frame_clip = gr.Markdown('Processing frame range [0 - 0]')
-                    set_frame_start = gr.Button("⬅ Set as Start", size='sm')
-                    set_frame_end = gr.Button("➡ Set as End", size='sm')
+                    set_frame_start = gr.Button("â¬… Set as Start", size='sm')
+                    set_frame_end = gr.Button("âž¡ Set as End", size='sm')
         with gr.Row(variant='panel'):
             with gr.Column(scale=1):
-                selected_face_detection = gr.Dropdown(swap_choices, value=roop.globals.CFG.face_detection_mode, label="Specify face selection for swapping")
+                selected_face_detection = gr.Dropdown(swap_choices, value=roop.config.globals.CFG.face_detection_mode, label="Specify face selection for swapping")
             with gr.Column(scale=1):
-                num_swap_steps = gr.Slider(1, 5, value=roop.globals.CFG.num_swap_steps, step=1.0, label="Number of swapping steps", info="More steps may increase likeness")
+                num_swap_steps = gr.Slider(1, 5, value=roop.config.globals.CFG.num_swap_steps, step=1.0, label="Number of swapping steps", info="More steps may increase likeness")
             with gr.Column(scale=2):
-                ui.globals.ui_selected_enhancer = gr.Dropdown(["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN", "Restoreformer++"], value=roop.globals.CFG.selected_enhancer, label="Select post-processing")
+                ui.globals.ui_selected_enhancer = gr.Dropdown(["None", "Codeformer", "DMDNet", "GFPGAN", "GPEN", "Restoreformer++"], value=roop.config.globals.CFG.selected_enhancer, label="Select post-processing")
 
         with gr.Row(variant='panel'):
             with gr.Column(scale=1):
-                max_face_distance = gr.Slider(0.01, 1.0, value=roop.globals.CFG.max_face_distance, label="Max Face Similarity Threshold", info="0.0 = identical 1.0 = no similarity", elem_id='max_face_distance', interactive=True)
+                max_face_distance = gr.Slider(0.01, 1.0, value=roop.config.globals.CFG.max_face_distance, label="Max Face Similarity Threshold", info="0.0 = identical 1.0 = no similarity", elem_id='max_face_distance', interactive=True)
             with gr.Column(scale=1):
-                ui.globals.ui_upscale = gr.Dropdown(["128px", "256px", "512px"], value=roop.globals.CFG.subsample_upscale, label="Subsample upscale to", interactive=True)
+                ui.globals.ui_upscale = gr.Dropdown(["128px", "256px", "512px"], value=roop.config.globals.CFG.subsample_upscale, label="Subsample upscale to", interactive=True)
             with gr.Column(scale=2):
-                ui.globals.ui_blend_ratio = gr.Slider(0.0, 1.0, value=roop.globals.CFG.blend_ratio, label="Original/Enhanced image blend ratio", info="Only used with active post-processing")
+                ui.globals.ui_blend_ratio = gr.Slider(0.0, 1.0, value=roop.config.globals.CFG.blend_ratio, label="Original/Enhanced image blend ratio", info="Only used with active post-processing")
 
         with gr.Row(variant='panel'):
             with gr.Column(scale=1):
-                video_swapping_method = gr.Dropdown(["Smart staged processing", "Legacy extract frames"], value=roop.globals.CFG.video_swapping_method, label="Select video processing method", interactive=True)
-                no_face_action = gr.Dropdown(choices=no_face_choices, value=roop.globals.CFG.no_face_action, label="Action on no face detected", interactive=True)
-                vr_mode = gr.Checkbox(label="VR Mode", value=roop.globals.CFG.vr_mode)
+                video_swapping_method = gr.Dropdown(["Smart staged processing", "Legacy extract frames"], value=roop.config.globals.CFG.video_swapping_method, label="Select video processing method", interactive=True)
+                no_face_action = gr.Dropdown(choices=no_face_choices, value=roop.config.globals.CFG.no_face_action, label="Action on no face detected", interactive=True)
+                vr_mode = gr.Checkbox(label="VR Mode", value=roop.config.globals.CFG.vr_mode)
             with gr.Column(scale=1):
                 with gr.Group():
-                    autorotate = gr.Checkbox(label="Auto rotate horizontal Faces", value=roop.globals.CFG.autorotate_faces)
-                    roop.globals.skip_audio = gr.Checkbox(label="Skip audio", value=roop.globals.CFG.skip_audio)
-                    roop.globals.keep_frames = gr.Checkbox(label="Keep Frames (relevant only when extracting frames)", value=roop.globals.CFG.keep_frames)
-                    roop.globals.wait_after_extraction = gr.Checkbox(label="Wait for user key press before creating video ", value=roop.globals.CFG.wait_after_extraction)
+                    autorotate = gr.Checkbox(label="Auto rotate horizontal Faces", value=roop.config.globals.CFG.autorotate_faces)
+                    roop.config.globals.skip_audio = gr.Checkbox(label="Skip audio", value=roop.config.globals.CFG.skip_audio)
+                    roop.config.globals.keep_frames = gr.Checkbox(label="Keep Frames (relevant only when extracting frames)", value=roop.config.globals.CFG.keep_frames)
+                    roop.config.globals.wait_after_extraction = gr.Checkbox(label="Wait for user key press before creating video ", value=roop.config.globals.CFG.wait_after_extraction)
 
         with gr.Row(variant='panel'):
             with gr.Column():
-                bt_start = gr.Button("▶ Start", variant='primary')
+                bt_start = gr.Button("â–¶ Start", variant='primary')
             with gr.Column():
-                bt_stop = gr.Button("⏹ Stop", variant='secondary', interactive=False)
-                gr.Button("👀 Open Output Folder", size='sm').click(fn=lambda: util.open_folder(roop.globals.output_path))
+                bt_stop = gr.Button("â¹ Stop", variant='secondary', interactive=False)
+                gr.Button("ðŸ‘€ Open Output Folder", size='sm').click(fn=lambda: util.open_folder(roop.config.globals.output_path))
             with gr.Column(scale=2):
-                output_method = gr.Dropdown(["File","Virtual Camera", "Both"], value=roop.globals.CFG.output_method, label="Select Output Method", interactive=True)
+                output_method = gr.Dropdown(["File","Virtual Camera", "Both"], value=roop.config.globals.CFG.output_method, label="Select Output Method", interactive=True)
         with gr.Row(variant='panel'):
             processing_info = gr.Markdown(get_processing_status_markdown())
             processing_timer = gr.Timer(1.0, active=True)
@@ -1122,9 +1122,9 @@ def faceswap_tab():
     ui.globals.ui_no_face_action = no_face_action
     ui.globals.ui_vr_mode = vr_mode
     ui.globals.ui_autorotate = autorotate
-    ui.globals.ui_skip_audio = roop.globals.skip_audio
-    ui.globals.ui_keep_frames = roop.globals.keep_frames
-    ui.globals.ui_wait_after_extraction = roop.globals.wait_after_extraction
+    ui.globals.ui_skip_audio = roop.config.globals.skip_audio
+    ui.globals.ui_keep_frames = roop.config.globals.keep_frames
+    ui.globals.ui_wait_after_extraction = roop.config.globals.wait_after_extraction
     ui.globals.ui_output_method = output_method
     ui.globals.ui_selected_mask_engine = selected_mask_engine
     ui.globals.ui_clip_text = clip_text
@@ -1187,8 +1187,8 @@ def faceswap_tab():
     bt_preview_mask.click(fn=on_preview_mask, inputs=[preview_frame_num, bt_destfiles, clip_text, selected_mask_engine], outputs=[previewimage]) 
 
     start_event = bt_start.click(fn=start_swap,
-        inputs=[output_method, ui.globals.ui_selected_enhancer, selected_face_detection, roop.globals.keep_frames, roop.globals.wait_after_extraction,
-                    roop.globals.skip_audio, max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text,video_swapping_method, no_face_action, vr_mode, autorotate, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale, maskimage],
+        inputs=[output_method, ui.globals.ui_selected_enhancer, selected_face_detection, roop.config.globals.keep_frames, roop.config.globals.wait_after_extraction,
+                    roop.config.globals.skip_audio, max_face_distance, ui.globals.ui_blend_ratio, selected_mask_engine, clip_text,video_swapping_method, no_face_action, vr_mode, autorotate, chk_restoreoriginalmouth, num_swap_steps, ui.globals.ui_upscale, maskimage],
         outputs=[bt_start, bt_stop, processing_info, resume_status], show_progress='full')
 
     resume_event = bt_resume_from_file.click(
@@ -1247,12 +1247,12 @@ def on_mouth_right_scale_changed(value):
 def set_mask_offset(index, mask_offset):
     global SELECTED_INPUT_FACE_INDEX
 
-    if len(roop.globals.INPUT_FACESETS) > SELECTED_INPUT_FACE_INDEX:
-        offs = roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets
+    if len(roop.config.globals.INPUT_FACESETS) > SELECTED_INPUT_FACE_INDEX:
+        offs = roop.config.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets
         while len(offs) < 10:
             offs.append(1.0)
         offs[index] = mask_offset
-        roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets = offs
+        roop.config.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets = offs
         if len(ui.globals.ui_input_face_refs) > SELECTED_INPUT_FACE_INDEX:
             ui.globals.ui_input_face_refs[SELECTED_INPUT_FACE_INDEX]["mask_offsets"] = list(offs)
 
@@ -1289,8 +1289,8 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
                                         
         elif util.has_image_extension(source_path):
             progress(0, desc="Retrieving faces from image")      
-            roop.globals.source_path = source_path
-            selection_faces_data = extract_face_images(roop.globals.source_path,  (False, 0))
+            roop.config.globals.source_path = source_path
+            selection_faces_data = extract_face_images(roop.config.globals.source_path,  (False, 0))
             progress(0.5, desc="Retrieving faces from image")
             for face_index, face_data in enumerate(selection_faces_data):
                 face_set = FaceSet()
@@ -1299,7 +1299,7 @@ def on_srcfile_changed(srcfiles, progress=gr.Progress()):
                 face_set.faces.append(face)
                 image = util.convert_to_gradio(face_data[1])
                 ui.globals.ui_input_thumbs.append(image)
-                roop.globals.INPUT_FACESETS.append(face_set)
+                roop.config.globals.INPUT_FACESETS.append(face_set)
                 ui.globals.ui_input_face_refs.append({
                     "type": "image_face",
                     "path": source_path,
@@ -1325,8 +1325,8 @@ def on_select_input_face(evt: gr.SelectData):
 def remove_selected_input_face():
     global SELECTED_INPUT_FACE_INDEX
 
-    if len(roop.globals.INPUT_FACESETS) > SELECTED_INPUT_FACE_INDEX:
-        f = roop.globals.INPUT_FACESETS.pop(SELECTED_INPUT_FACE_INDEX)
+    if len(roop.config.globals.INPUT_FACESETS) > SELECTED_INPUT_FACE_INDEX:
+        f = roop.config.globals.INPUT_FACESETS.pop(SELECTED_INPUT_FACE_INDEX)
         del f
     if len(ui.globals.ui_input_face_refs) > SELECTED_INPUT_FACE_INDEX:
         f = ui.globals.ui_input_face_refs.pop(SELECTED_INPUT_FACE_INDEX)
@@ -1340,7 +1340,7 @@ def remove_selected_input_face():
 def move_selected_input(button_text):
     global SELECTED_INPUT_FACE_INDEX
 
-    if button_text == "⬅ Move left":
+    if button_text == "â¬… Move left":
         if SELECTED_INPUT_FACE_INDEX <= 0:
             return ui.globals.ui_input_thumbs
         offset = -1
@@ -1349,8 +1349,8 @@ def move_selected_input(button_text):
             return ui.globals.ui_input_thumbs
         offset = 1
     
-    f = roop.globals.INPUT_FACESETS.pop(SELECTED_INPUT_FACE_INDEX)
-    roop.globals.INPUT_FACESETS.insert(SELECTED_INPUT_FACE_INDEX + offset, f)
+    f = roop.config.globals.INPUT_FACESETS.pop(SELECTED_INPUT_FACE_INDEX)
+    roop.config.globals.INPUT_FACESETS.insert(SELECTED_INPUT_FACE_INDEX + offset, f)
     if len(ui.globals.ui_input_face_refs) > SELECTED_INPUT_FACE_INDEX:
         f = ui.globals.ui_input_face_refs.pop(SELECTED_INPUT_FACE_INDEX)
         ui.globals.ui_input_face_refs.insert(SELECTED_INPUT_FACE_INDEX + offset, f)
@@ -1362,7 +1362,7 @@ def move_selected_input(button_text):
 def move_selected_target(button_text):
     global SELECTED_TARGET_FACE_INDEX
 
-    if button_text == "⬅ Move left":
+    if button_text == "â¬… Move left":
         if SELECTED_TARGET_FACE_INDEX <= 0:
             return ui.globals.ui_target_thumbs
         offset = -1
@@ -1371,8 +1371,8 @@ def move_selected_target(button_text):
             return ui.globals.ui_target_thumbs
         offset = 1
     
-    f = roop.globals.TARGET_FACES.pop(SELECTED_TARGET_FACE_INDEX)
-    roop.globals.TARGET_FACES.insert(SELECTED_TARGET_FACE_INDEX + offset, f)
+    f = roop.config.globals.TARGET_FACES.pop(SELECTED_TARGET_FACE_INDEX)
+    roop.config.globals.TARGET_FACES.insert(SELECTED_TARGET_FACE_INDEX + offset, f)
     if len(ui.globals.ui_target_face_refs) > SELECTED_TARGET_FACE_INDEX:
         f = ui.globals.ui_target_face_refs.pop(SELECTED_TARGET_FACE_INDEX)
         ui.globals.ui_target_face_refs.insert(SELECTED_TARGET_FACE_INDEX + offset, f)
@@ -1390,7 +1390,7 @@ def on_select_target_face(evt: gr.SelectData):
 
 def remove_selected_target_face():
     if len(ui.globals.ui_target_thumbs) > SELECTED_TARGET_FACE_INDEX:
-        f = roop.globals.TARGET_FACES.pop(SELECTED_TARGET_FACE_INDEX)
+        f = roop.config.globals.TARGET_FACES.pop(SELECTED_TARGET_FACE_INDEX)
         del f
     if len(ui.globals.ui_target_face_refs) > SELECTED_TARGET_FACE_INDEX:
         f = ui.globals.ui_target_face_refs.pop(SELECTED_TARGET_FACE_INDEX)
@@ -1405,29 +1405,29 @@ def on_use_face_from_selected(files, frame_num):
     target_paths = list_target_paths(files)
     if selected_preview_index >= len(target_paths):
         return ui.globals.ui_target_thumbs, gr.Dropdown(visible=True)
-    roop.globals.target_path = target_paths[selected_preview_index]
+    roop.config.globals.target_path = target_paths[selected_preview_index]
     faces_data = []
 
-    if util.is_image(roop.globals.target_path) and not roop.globals.target_path.lower().endswith(('gif')):
-        faces_data = extract_face_images(roop.globals.target_path, (False, 0))
-    elif util.is_video(roop.globals.target_path) or roop.globals.target_path.lower().endswith(('gif')):
-        faces_data = extract_face_images(roop.globals.target_path, (True, frame_num))
+    if util.is_image(roop.config.globals.target_path) and not roop.config.globals.target_path.lower().endswith(('gif')):
+        faces_data = extract_face_images(roop.config.globals.target_path, (False, 0))
+    elif util.is_video(roop.config.globals.target_path) or roop.config.globals.target_path.lower().endswith(('gif')):
+        faces_data = extract_face_images(roop.config.globals.target_path, (True, frame_num))
     else:
         gr.Info('Unknown image/video type!')
-        roop.globals.target_path = None
+        roop.config.globals.target_path = None
         return ui.globals.ui_target_thumbs, gr.Dropdown(visible=True)
 
     if len(faces_data) == 0:
         gr.Info('No faces detected!')
-        roop.globals.target_path = None
+        roop.config.globals.target_path = None
         return ui.globals.ui_target_thumbs, gr.Dropdown(visible=True)
 
     for face_index, face_data in enumerate(faces_data):
-        roop.globals.TARGET_FACES.append(face_data[0])
+        roop.config.globals.TARGET_FACES.append(face_data[0])
         ui.globals.ui_target_thumbs.append(util.convert_to_gradio(face_data[1]))
         ui.globals.ui_target_face_refs.append({
-            "path": roop.globals.target_path,
-            "frame_number": int(frame_num) if (util.is_video(roop.globals.target_path) or roop.globals.target_path.lower().endswith(('gif'))) else 0,
+            "path": roop.config.globals.target_path,
+            "frame_number": int(frame_num) if (util.is_video(roop.config.globals.target_path) or roop.config.globals.target_path.lower().endswith(('gif'))) else 0,
             "face_index": face_index,
         })
 
@@ -1438,14 +1438,14 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
                               selected_mask_engine, clip_text, no_face_action, vr_mode, auto_rotate, maskimage, show_face_area, restore_original_mouth, num_steps, upsample):
     global SELECTED_INPUT_FACE_INDEX, manual_masking, current_video_fps
 
-    from roop.core import live_swap, get_processing_plugins
+    from roop.core.app import live_swap, get_processing_plugins
 
     manual_masking = False
     mask_offsets = [0,0,0,0,20.0,10.0,1.0,1.0,1.0,1.0]
-    if len(roop.globals.INPUT_FACESETS) > SELECTED_INPUT_FACE_INDEX:
-        if not hasattr(roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0], 'mask_offsets'):
-            roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets = list(mask_offsets)
-        mask_offsets = roop.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets
+    if len(roop.config.globals.INPUT_FACESETS) > SELECTED_INPUT_FACE_INDEX:
+        if not hasattr(roop.config.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0], 'mask_offsets'):
+            roop.config.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets = list(mask_offsets)
+        mask_offsets = roop.config.globals.INPUT_FACESETS[SELECTED_INPUT_FACE_INDEX].faces[0].mask_offsets
         while len(mask_offsets) < 10:
             mask_offsets.append(1.0)
 
@@ -1471,28 +1471,28 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
     if current_frame is None:
         return None, None, gr.Slider(info=timeinfo)
 
-    if not fake_preview or len(roop.globals.INPUT_FACESETS) < 1:
+    if not fake_preview or len(roop.config.globals.INPUT_FACESETS) < 1:
         return gr.Image(value=util.convert_to_gradio(current_frame), visible=True), gr.ImageEditor(visible=False), gr.Slider(info=timeinfo)
 
-    roop.globals.face_swap_mode = translate_swap_mode(detection)
-    roop.globals.selected_enhancer = enhancer
-    roop.globals.distance_threshold = face_distance
-    roop.globals.blend_ratio = blend_ratio
-    roop.globals.no_face_action = index_of_no_face_action(no_face_action)
-    roop.globals.vr_mode = vr_mode
-    roop.globals.autorotate_faces = auto_rotate
-    roop.globals.subsample_size = int(upsample[:3])
+    roop.config.globals.face_swap_mode = translate_swap_mode(detection)
+    roop.config.globals.selected_enhancer = enhancer
+    roop.config.globals.distance_threshold = face_distance
+    roop.config.globals.blend_ratio = blend_ratio
+    roop.config.globals.no_face_action = index_of_no_face_action(no_face_action)
+    roop.config.globals.vr_mode = vr_mode
+    roop.config.globals.autorotate_faces = auto_rotate
+    roop.config.globals.subsample_size = int(upsample[:3])
 
 
     mask_engine = map_mask_engine(selected_mask_engine, clip_text)
 
-    roop.globals.execution_threads = roop.globals.CFG.max_threads
+    roop.config.globals.execution_threads = roop.config.globals.CFG.max_threads
     face_index = SELECTED_INPUT_FACE_INDEX
-    if len(roop.globals.INPUT_FACESETS) <= face_index:
+    if len(roop.config.globals.INPUT_FACESETS) <= face_index:
         face_index = 0
    
-    options = ProcessOptions(get_processing_plugins(mask_engine), roop.globals.distance_threshold, roop.globals.blend_ratio,
-                              roop.globals.face_swap_mode, face_index, clip_text, maskimage, num_steps, roop.globals.subsample_size, show_face_area, restore_original_mouth)
+    options = ProcessOptions(get_processing_plugins(mask_engine), roop.config.globals.distance_threshold, roop.config.globals.blend_ratio,
+                              roop.config.globals.face_swap_mode, face_index, clip_text, maskimage, num_steps, roop.config.globals.subsample_size, show_face_area, restore_original_mouth)
 
     current_frame = live_swap(current_frame, options)
     if current_frame is None:
@@ -1549,7 +1549,7 @@ def on_set_frame(sender:str, frame_num):
 
 
 def on_preview_mask(frame_num, files, clip_text, mask_engine):
-    from roop.core import live_swap, get_processing_plugins
+    from roop.core.app import live_swap, get_processing_plugins
     global is_processing
 
     target_paths = list_target_paths(files)
@@ -1570,7 +1570,7 @@ def on_preview_mask(frame_num, files, clip_text, mask_engine):
           mask_engine = None
     elif mask_engine == "DFL XSeg":
         mask_engine = "mask_xseg"
-    options = ProcessOptions(get_processing_plugins(mask_engine), roop.globals.distance_threshold, roop.globals.blend_ratio,
+    options = ProcessOptions(get_processing_plugins(mask_engine), roop.config.globals.distance_threshold, roop.config.globals.blend_ratio,
                               "all", 0, clip_text, None, 0, 128, False, False, True)
 
     current_frame = live_swap(current_frame, options)
@@ -1586,7 +1586,7 @@ def on_clear_destfiles():
     clear_target_face_state()
     ui.globals.ui_target_files = []
     ui.globals.ui_resume_bound_path = None
-    roop.globals.active_resume_cache_id = None
+    roop.config.globals.active_resume_cache_id = None
     list_files_process.clear()
     selected_preview_index = 0
     return ui.globals.ui_target_thumbs, gr.Slider(value=1, maximum=1, info='0:00:00'), '', ''
@@ -1649,11 +1649,11 @@ def save_resume_snapshot_for_run(output_method, enhancer, detection, keep_frames
     resume_path, reused_existing, resume_key = write_resume_payload_with_result(payload)
     try:
         verified_payload = read_resume_payload(resume_path)
-        roop.globals.active_resume_key = get_resume_payload_signature(verified_payload)
-        roop.globals.active_resume_job_key = verified_payload.get("resume_job_key") or get_resume_job_signature(verified_payload)
+        roop.config.globals.active_resume_key = get_resume_payload_signature(verified_payload)
+        roop.config.globals.active_resume_job_key = verified_payload.get("resume_job_key") or get_resume_job_signature(verified_payload)
     except Exception:
-        roop.globals.active_resume_key = resume_key
-        roop.globals.active_resume_job_key = resume_job_key
+        roop.config.globals.active_resume_key = resume_key
+        roop.config.globals.active_resume_job_key = resume_job_key
     status_detail = "Reused existing resume config for this run" if reused_existing else "Saved resume config for this run"
     return resume_path, get_resume_status_markdown(resume_path, status_detail), reused_existing
 
@@ -1661,8 +1661,8 @@ def save_resume_snapshot_for_run(output_method, enhancer, detection, keep_frames
 def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
                 selected_mask_engine, clip_text, processing_method, no_face_action, vr_mode, autorotate, restore_original_mouth, num_swap_steps, upsample, imagemask, progress=gr.Progress()):
     from ui.main import prepare_environment
-    from roop.core import batch_process_regular
-    from roop.memory import describe_memory_plan, resolve_memory_plan
+    from roop.core.app import batch_process_regular
+    from roop.memory.planner import describe_memory_plan, resolve_memory_plan
     global is_processing, list_files_process
 
     resume_status = get_resume_status_markdown(ui.globals.ui_resume_last_path)
@@ -1670,8 +1670,8 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
         yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown(), resume_status
         return
     
-    if roop.globals.CFG.clear_output:
-        shutil.rmtree(roop.globals.output_path, ignore_errors=True)
+    if roop.config.globals.CFG.clear_output:
+        shutil.rmtree(roop.config.globals.output_path, ignore_errors=True)
 
     if not util.is_installed("ffmpeg"):
         msg = "ffmpeg is not installed! No video processing possible."
@@ -1679,22 +1679,22 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
 
     prepare_environment()
 
-    roop.globals.selected_enhancer = enhancer
-    roop.globals.target_path = None
-    roop.globals.distance_threshold = face_distance
-    roop.globals.blend_ratio = blend_ratio
-    roop.globals.keep_frames = keep_frames
-    roop.globals.wait_after_extraction = wait_after_extraction
-    roop.globals.skip_audio = skip_audio
-    roop.globals.face_swap_mode = translate_swap_mode(detection)
-    roop.globals.no_face_action = index_of_no_face_action(no_face_action)
-    roop.globals.vr_mode = vr_mode
-    roop.globals.autorotate_faces = autorotate
-    roop.globals.subsample_size = int(upsample[:3])
+    roop.config.globals.selected_enhancer = enhancer
+    roop.config.globals.target_path = None
+    roop.config.globals.distance_threshold = face_distance
+    roop.config.globals.blend_ratio = blend_ratio
+    roop.config.globals.keep_frames = keep_frames
+    roop.config.globals.wait_after_extraction = wait_after_extraction
+    roop.config.globals.skip_audio = skip_audio
+    roop.config.globals.face_swap_mode = translate_swap_mode(detection)
+    roop.config.globals.no_face_action = index_of_no_face_action(no_face_action)
+    roop.config.globals.vr_mode = vr_mode
+    roop.config.globals.autorotate_faces = autorotate
+    roop.config.globals.subsample_size = int(upsample[:3])
     mask_engine = map_mask_engine(selected_mask_engine, clip_text)
 
-    if roop.globals.face_swap_mode == 'selected':
-        if len(roop.globals.TARGET_FACES) < 1:
+    if roop.config.globals.face_swap_mode == 'selected':
+        if len(roop.config.globals.TARGET_FACES) < 1:
             gr.Error('No Target Face selected!')
             yield gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown(), resume_status
             return
@@ -1712,20 +1712,20 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
         else:
             gr.Info(f"Resume config saved: {resume_path}")
     except Exception as exc:
-        roop.globals.active_resume_key = None
-        roop.globals.active_resume_job_key = None
-        roop.globals.active_resume_cache_id = None
+        roop.config.globals.active_resume_key = None
+        roop.config.globals.active_resume_job_key = None
+        roop.config.globals.active_resume_cache_id = None
         resume_status = get_resume_status_markdown(ui.globals.ui_resume_last_path, f"Resume config was not saved: {exc}")
         gr.Warning(f"Resume config was not saved for this run: {exc}")
     yield gr.Button(variant="secondary", interactive=False), gr.Button(variant="primary", interactive=True), get_processing_status_markdown(), resume_status
-    roop.globals.execution_threads = roop.globals.CFG.max_threads
-    roop.globals.video_encoder = roop.globals.CFG.output_video_codec
-    roop.globals.video_quality = roop.globals.CFG.video_quality
-    roop.globals.max_memory = None
-    roop.globals.max_vram = None
+    roop.config.globals.execution_threads = roop.config.globals.CFG.max_threads
+    roop.config.globals.video_encoder = roop.config.globals.CFG.output_video_codec
+    roop.config.globals.video_quality = roop.config.globals.CFG.video_quality
+    roop.config.globals.max_memory = None
+    roop.config.globals.max_vram = None
     set_memory_status(describe_memory_plan(resolve_memory_plan()))
     set_processing_message("Preparing faceswap job", stage="prepare", detail="Resolving staged resource tuning and worker plan", force_log=True)
-    gr.Info(roop.globals.runtime_memory_status)
+    gr.Info(roop.config.globals.runtime_memory_status)
 
     batch_process_regular(output_method, list_files_process, mask_engine, clip_text, processing_method, imagemask, restore_original_mouth, num_swap_steps, progress, SELECTED_INPUT_FACE_INDEX)
     is_processing = False
@@ -1768,7 +1768,7 @@ def resume_swap_from_file(resume_path, progress=gr.Progress()):
 
 
 def stop_swap():
-    roop.globals.processing = False
+    roop.config.globals.processing = False
     set_processing_message('Stopping... waiting for workers to finish', status='stopping', detail='The current stage will stop as soon as workers drain', force_log=True)
     gr.Info('Aborting processing - please wait for the remaining threads to be stopped')
     return gr.Button(variant="primary", interactive=True), gr.Button(variant="secondary", interactive=False), get_processing_status_markdown(), get_resume_status_markdown(ui.globals.ui_resume_last_path)
@@ -1825,6 +1825,7 @@ def on_destfiles_selected(evt: gr.SelectData):
 
 
 def get_gradio_output_format():
-    if roop.globals.CFG.output_image_format == "jpg":
+    if roop.config.globals.CFG.output_image_format == "jpg":
         return "jpeg"
-    return roop.globals.CFG.output_image_format
+    return roop.config.globals.CFG.output_image_format
+

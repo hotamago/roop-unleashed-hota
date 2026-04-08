@@ -1,11 +1,11 @@
-import roop.globals
+﻿import roop.config.globals
 
 
 def test_resolve_model_path_for_faceswap_uses_native_batch_patch(monkeypatch):
     try:
-        from roop import onnx_runtime
+        import roop.onnx.runtime as onnx_runtime
     except ImportError as exc:
-        raise AssertionError("roop.onnx_runtime helper should exist") from exc
+        raise AssertionError("roop.onnx.runtime helper should exist") from exc
 
     monkeypatch.setattr(
         onnx_runtime,
@@ -20,9 +20,9 @@ def test_resolve_model_path_for_faceswap_uses_native_batch_patch(monkeypatch):
 
 def test_resolve_model_path_for_gfpgan_keeps_original_model(monkeypatch):
     try:
-        from roop import onnx_runtime
+        import roop.onnx.runtime as onnx_runtime
     except ImportError as exc:
-        raise AssertionError("roop.onnx_runtime helper should exist") from exc
+        raise AssertionError("roop.onnx.runtime helper should exist") from exc
 
     ensure_calls = {"count": 0}
 
@@ -40,11 +40,11 @@ def test_resolve_model_path_for_gfpgan_keeps_original_model(monkeypatch):
 
 def test_get_execution_providers_for_faceswap_keeps_tensorrt():
     try:
-        from roop import onnx_runtime
+        import roop.onnx.runtime as onnx_runtime
     except ImportError as exc:
-        raise AssertionError("roop.onnx_runtime helper should exist") from exc
+        raise AssertionError("roop.onnx.runtime helper should exist") from exc
 
-    roop.globals.execution_providers = [
+    roop.config.globals.execution_providers = [
         ("TensorrtExecutionProvider", {"device_id": 0}),
         ("CUDAExecutionProvider", {"device_id": 0}),
         "CPUExecutionProvider",
@@ -58,11 +58,11 @@ def test_get_execution_providers_for_faceswap_keeps_tensorrt():
 
 def test_get_execution_providers_for_gfpgan_drops_tensorrt():
     try:
-        from roop import onnx_runtime
+        import roop.onnx.runtime as onnx_runtime
     except ImportError as exc:
-        raise AssertionError("roop.onnx_runtime helper should exist") from exc
+        raise AssertionError("roop.onnx.runtime helper should exist") from exc
 
-    roop.globals.execution_providers = [
+    roop.config.globals.execution_providers = [
         ("TensorrtExecutionProvider", {"device_id": 0}),
         ("CUDAExecutionProvider", {"device_id": 0}),
         "CPUExecutionProvider",
@@ -76,3 +76,4 @@ def test_get_execution_providers_for_gfpgan_drops_tensorrt():
         and not (isinstance(provider, tuple) and provider[0] == "TensorrtExecutionProvider")
         for provider in providers
     )
+

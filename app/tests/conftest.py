@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 import sys
 from types import SimpleNamespace
 
@@ -12,7 +12,7 @@ if str(APP_ROOT) not in sys.path:
 
 @pytest.fixture(autouse=True)
 def reset_runtime_globals(monkeypatch):
-    import roop.globals
+    import roop.config.globals
     import ui.globals
     import ui.tabs.faceswap_tab as faceswap_tab
 
@@ -25,20 +25,20 @@ def reset_runtime_globals(monkeypatch):
         enhance_batch_size=8,
         single_batch_workers=1,
     )
-    monkeypatch.setattr(roop.globals, "CFG", cfg, raising=False)
-    monkeypatch.setattr(roop.globals, "processing", True, raising=False)
-    monkeypatch.setattr(roop.globals, "execution_providers", ["CUDAExecutionProvider", "CPUExecutionProvider"], raising=False)
-    monkeypatch.setattr(roop.globals, "runtime_memory_status", "Resource tuning: not computed yet", raising=False)
-    monkeypatch.setattr(roop.globals, "active_memory_plan", None, raising=False)
-    monkeypatch.setattr(roop.globals, "runtime_processing_status", "Idle", raising=False)
-    monkeypatch.setattr(roop.globals, "runtime_processing_markdown", "**Process Info**\n- Status: Idle", raising=False)
-    monkeypatch.setattr(roop.globals, "runtime_processing_state", {}, raising=False)
-    monkeypatch.setattr(roop.globals, "runtime_processing_last_log_at", 0.0, raising=False)
-    monkeypatch.setattr(roop.globals, "active_resume_key", None, raising=False)
-    monkeypatch.setattr(roop.globals, "active_resume_job_key", None, raising=False)
-    monkeypatch.setattr(roop.globals, "active_resume_cache_id", None, raising=False)
-    monkeypatch.setattr(roop.globals, "INPUT_FACESETS", [], raising=False)
-    monkeypatch.setattr(roop.globals, "TARGET_FACES", [], raising=False)
+    monkeypatch.setattr(roop.config.globals, "CFG", cfg, raising=False)
+    monkeypatch.setattr(roop.config.globals, "processing", True, raising=False)
+    monkeypatch.setattr(roop.config.globals, "execution_providers", ["CUDAExecutionProvider", "CPUExecutionProvider"], raising=False)
+    monkeypatch.setattr(roop.config.globals, "runtime_memory_status", "Resource tuning: not computed yet", raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_memory_plan", None, raising=False)
+    monkeypatch.setattr(roop.config.globals, "runtime_processing_status", "Idle", raising=False)
+    monkeypatch.setattr(roop.config.globals, "runtime_processing_markdown", "**Process Info**\n- Status: Idle", raising=False)
+    monkeypatch.setattr(roop.config.globals, "runtime_processing_state", {}, raising=False)
+    monkeypatch.setattr(roop.config.globals, "runtime_processing_last_log_at", 0.0, raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_key", None, raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_job_key", None, raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_cache_id", None, raising=False)
+    monkeypatch.setattr(roop.config.globals, "INPUT_FACESETS", [], raising=False)
+    monkeypatch.setattr(roop.config.globals, "TARGET_FACES", [], raising=False)
     monkeypatch.setattr(ui.globals, "ui_input_thumbs", [], raising=False)
     monkeypatch.setattr(ui.globals, "ui_input_face_refs", [], raising=False)
     monkeypatch.setattr(ui.globals, "ui_target_thumbs", [], raising=False)
@@ -50,3 +50,4 @@ def reset_runtime_globals(monkeypatch):
     monkeypatch.setattr(faceswap_tab, "selected_preview_index", 0, raising=False)
     monkeypatch.setattr(faceswap_tab, "SELECTED_INPUT_FACE_INDEX", 0, raising=False)
     monkeypatch.setattr(faceswap_tab, "SELECTED_TARGET_FACE_INDEX", 0, raising=False)
+

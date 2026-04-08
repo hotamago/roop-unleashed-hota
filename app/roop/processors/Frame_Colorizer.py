@@ -1,12 +1,13 @@
-import cv2 
+﻿import cv2 
 import numpy as np
 import onnxruntime
-import roop.globals
+import roop.config.globals
 
-from roop.utilities import resolve_relative_path
-from roop.typing import Frame
+from roop.processors.base import BaseProcessor
+from roop.utils import resolve_relative_path
+from roop.config.types import Frame
 
-class Frame_Colorizer():
+class Frame_Colorizer(BaseProcessor):
     plugin_options:dict = None
     model_colorizer = None
     devicename = None
@@ -34,7 +35,7 @@ class Frame_Colorizer():
                 model_path = resolve_relative_path('../models/Frame/deoldify_stable.onnx')
 
             onnxruntime.set_default_logger_severity(3)
-            self.model_colorizer = onnxruntime.InferenceSession(model_path, None, providers=roop.globals.execution_providers)
+            self.model_colorizer = onnxruntime.InferenceSession(model_path, None, providers=roop.config.globals.execution_providers)
             self.model_inputs = self.model_colorizer.get_inputs()
             model_outputs = self.model_colorizer.get_outputs()
             self.io_binding = self.model_colorizer.io_binding()
@@ -67,4 +68,5 @@ class Frame_Colorizer():
         self.model_colorizer = None
         del self.io_binding
         self.io_binding = None
+
 

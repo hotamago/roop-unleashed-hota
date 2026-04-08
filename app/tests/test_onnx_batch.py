@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 import onnx
 from onnx import TensorProto, helper
@@ -17,9 +17,9 @@ def _make_identity_model(path: Path, input_shape, output_shape):
 
 def test_ensure_native_batch_model_rewrites_static_batch_to_symbolic(tmp_path, monkeypatch):
     try:
-        from roop import onnx_batch
+        import roop.onnx.batch as onnx_batch
     except ImportError as exc:
-        raise AssertionError("roop.onnx_batch helper should exist") from exc
+        raise AssertionError("roop.onnx.batch helper should exist") from exc
 
     model_path = tmp_path / "static-batch.onnx"
     _make_identity_model(model_path, [1, 3], [1, 3])
@@ -44,9 +44,9 @@ def test_ensure_native_batch_model_rewrites_static_batch_to_symbolic(tmp_path, m
 
 def test_ensure_native_batch_model_keeps_dynamic_model_path(tmp_path):
     try:
-        from roop import onnx_batch
+        import roop.onnx.batch as onnx_batch
     except ImportError as exc:
-        raise AssertionError("roop.onnx_batch helper should exist") from exc
+        raise AssertionError("roop.onnx.batch helper should exist") from exc
 
     model_path = tmp_path / "dynamic-batch.onnx"
     _make_identity_model(model_path, ["batch", 3], ["batch", 3])
@@ -58,9 +58,9 @@ def test_ensure_native_batch_model_keeps_dynamic_model_path(tmp_path):
 
 def test_ensure_native_batch_model_rejects_patch_when_output_stays_static(tmp_path, monkeypatch):
     try:
-        from roop import onnx_batch
+        import roop.onnx.batch as onnx_batch
     except ImportError as exc:
-        raise AssertionError("roop.onnx_batch helper should exist") from exc
+        raise AssertionError("roop.onnx.batch helper should exist") from exc
 
     model_path = tmp_path / "static-output.onnx"
     _make_identity_model(model_path, [1, 3], [1, 3])
@@ -86,9 +86,9 @@ def test_ensure_native_batch_model_rejects_patch_when_output_stays_static(tmp_pa
 
 def test_ensure_native_batch_model_ignores_existing_unsafe_cached_patch(tmp_path, monkeypatch):
     try:
-        from roop import onnx_batch
+        import roop.onnx.batch as onnx_batch
     except ImportError as exc:
-        raise AssertionError("roop.onnx_batch helper should exist") from exc
+        raise AssertionError("roop.onnx.batch helper should exist") from exc
 
     model_path = tmp_path / "cached-static-output.onnx"
     _make_identity_model(model_path, [1, 3], [1, 3])
@@ -111,3 +111,4 @@ def test_ensure_native_batch_model_ignores_existing_unsafe_cached_patch(tmp_path
     output_dim = resolved_model.graph.output[0].type.tensor_type.shape.dim[0]
     assert not input_dim.HasField("dim_value")
     assert not output_dim.HasField("dim_value")
+

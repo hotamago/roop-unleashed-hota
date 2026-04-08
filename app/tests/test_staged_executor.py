@@ -1,12 +1,12 @@
-from types import SimpleNamespace
+﻿from types import SimpleNamespace
 
 import numpy as np
 
-import roop.globals
-from roop.ProcessEntry import ProcessEntry
-from roop.ProcessMgr import eNoFaceAction
-from roop.ProcessOptions import ProcessOptions
-from roop.staged_executor import (
+import roop.config.globals
+from roop.pipeline.entry import ProcessEntry
+from roop.pipeline.batch_executor import eNoFaceAction
+from roop.pipeline.options import ProcessOptions
+from roop.pipeline.staged_executor.executor import (
     StagedBatchExecutor,
     get_entry_job_key,
     get_entry_job_relpath,
@@ -93,7 +93,7 @@ def test_ensure_enhance_stage_flushes_cache_once_per_chunk(tmp_path, monkeypatch
         assert path == enhance_cache_path
         write_calls.append(dict(cache_map))
 
-    monkeypatch.setattr("roop.staged_executor.ProcessMgr", FakeProcessMgr)
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.ProcessMgr", FakeProcessMgr)
     monkeypatch.setattr(executor, "read_stage_cache_map", fake_read_stage_cache_map)
     monkeypatch.setattr(executor, "write_stage_cache_map", fake_write_stage_cache_map)
     monkeypatch.setattr(executor, "update_progress", lambda *args, **kwargs: None)
@@ -221,10 +221,10 @@ def test_ensure_full_compose_stage_streams_source_once_across_packs(tmp_path, mo
         for frame_number in range(frame_start, frame_end):
             yield frame_number, np.zeros((2, 2, 3), dtype=np.uint8)
 
-    monkeypatch.setattr("roop.staged_executor.open_video_capture", lambda _path: FakeCapture())
-    monkeypatch.setattr("roop.staged_executor.FFMPEG_VideoWriter", FakeWriter)
-    monkeypatch.setattr("roop.staged_executor.ProcessMgr", FakeProcessMgr)
-    monkeypatch.setattr("roop.staged_executor.iter_video_chunk", fake_iter_video_chunk)
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.open_video_capture", lambda _path: FakeCapture())
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.FFMPEG_VideoWriter", FakeWriter)
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.ProcessMgr", FakeProcessMgr)
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.iter_video_chunk", fake_iter_video_chunk)
     monkeypatch.setattr(executor, "iter_detect_packs", fake_iter_detect_packs)
     monkeypatch.setattr(executor, "read_stage_cache_map", lambda _path: {})
     monkeypatch.setattr(executor, "update_progress", lambda *args, **kwargs: None)
@@ -309,10 +309,10 @@ def test_ensure_full_compose_stage_writes_cached_swapped_frames(tmp_path, monkey
         for frame_number in range(frame_start, frame_end):
             yield frame_number, original_frame.copy()
 
-    monkeypatch.setattr("roop.staged_executor.open_video_capture", lambda _path: FakeCapture())
-    monkeypatch.setattr("roop.staged_executor.FFMPEG_VideoWriter", FakeWriter)
-    monkeypatch.setattr("roop.staged_executor.ProcessMgr", FakeProcessMgr)
-    monkeypatch.setattr("roop.staged_executor.iter_video_chunk", fake_iter_video_chunk)
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.open_video_capture", lambda _path: FakeCapture())
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.FFMPEG_VideoWriter", FakeWriter)
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.ProcessMgr", FakeProcessMgr)
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.iter_video_chunk", fake_iter_video_chunk)
     monkeypatch.setattr(executor, "iter_detect_packs", fake_iter_detect_packs)
     monkeypatch.setattr(
         executor,
@@ -323,8 +323,8 @@ def test_ensure_full_compose_stage_writes_cached_swapped_frames(tmp_path, monkey
         },
     )
     monkeypatch.setattr(executor, "update_progress", lambda *args, **kwargs: None)
-    monkeypatch.setattr(roop.globals.CFG, "max_threads", 1, raising=False)
-    monkeypatch.setattr(roop.globals, "no_face_action", eNoFaceAction.USE_ORIGINAL_FRAME, raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "max_threads", 1, raising=False)
+    monkeypatch.setattr(roop.config.globals, "no_face_action", eNoFaceAction.USE_ORIGINAL_FRAME, raising=False)
 
     executor.ensure_full_compose_stage(
         entry,
@@ -346,7 +346,7 @@ def test_ensure_full_compose_stage_writes_cached_swapped_frames(tmp_path, monkey
 
 
 def test_pipeline_steps_and_detect_pack_ranges_follow_current_config(monkeypatch):
-    monkeypatch.setattr(roop.globals.CFG, "detect_pack_frame_count", 32, raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "detect_pack_frame_count", 32, raising=False)
     executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}, "mask_xseg": {}, "gfpgan": {}}))
     executor.current_entry = SimpleNamespace(filename="clip.mp4")
 
@@ -361,15 +361,15 @@ def test_entry_signature_ignores_cache_shaping_config_changes(tmp_path, monkeypa
     entry = ProcessEntry(str(media_path), 0, 10, 30.0)
     options = make_options({"faceswap": {}})
 
-    monkeypatch.setattr(roop.globals.CFG, "detect_pack_frame_count", 256, raising=False)
-    monkeypatch.setattr(roop.globals.CFG, "staged_chunk_size", 0, raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "detect_pack_frame_count", 256, raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "staged_chunk_size", 0, raising=False)
     sig_a = get_entry_signature(entry, options, "File")
 
-    monkeypatch.setattr(roop.globals.CFG, "detect_pack_frame_count", 512, raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "detect_pack_frame_count", 512, raising=False)
     sig_b = get_entry_signature(entry, options, "File")
 
-    monkeypatch.setattr(roop.globals.CFG, "detect_pack_frame_count", 256, raising=False)
-    monkeypatch.setattr(roop.globals.CFG, "staged_chunk_size", 96, raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "detect_pack_frame_count", 256, raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "staged_chunk_size", 96, raising=False)
     sig_c = get_entry_signature(entry, options, "File")
 
     assert sig_a == sig_b
@@ -377,7 +377,7 @@ def test_entry_signature_ignores_cache_shaping_config_changes(tmp_path, monkeypa
 
 
 def test_entry_job_relpath_uses_resume_cache_id_and_file_signature(tmp_path, monkeypatch):
-    monkeypatch.setattr(roop.globals, "active_resume_cache_id", "20260406_8d8d244889be", raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_cache_id", "20260406_8d8d244889be", raising=False)
     media_path = tmp_path / "clip.mp4"
     media_path.write_bytes(b"v")
     entry = ProcessEntry(str(media_path), 0, 10, 30.0, file_signature="sha256:abc")
@@ -387,7 +387,7 @@ def test_entry_job_relpath_uses_resume_cache_id_and_file_signature(tmp_path, mon
 
 
 def test_prepare_job_uses_nested_jobs_folder_for_resume_cache_id(tmp_path, monkeypatch):
-    monkeypatch.setattr(roop.globals, "active_resume_cache_id", "sess1", raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_cache_id", "sess1", raising=False)
     media_path = tmp_path / "clip.mp4"
     media_path.write_bytes(b"v")
     entry = ProcessEntry(str(media_path), 0, 5, 30.0, file_signature="sha256:z")
@@ -403,9 +403,9 @@ def test_entry_job_key_unchanged_when_global_mask_batch_changes_with_resume_job_
     media_path.write_bytes(b"v")
     entry = ProcessEntry(str(media_path), 0, 10, 30.0, file_signature="sha256:same")
     options = make_options({"faceswap": {}})
-    monkeypatch.setattr(roop.globals, "active_resume_job_key", "resume-job-locked", raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_job_key", "resume-job-locked", raising=False)
     k32 = get_entry_job_key(entry, options)
-    monkeypatch.setattr(roop.globals.CFG, "mask_batch_size", 128, raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "mask_batch_size", 128, raising=False)
     k128 = get_entry_job_key(entry, options)
     assert k32 == k128
 
@@ -415,10 +415,10 @@ def test_entry_signature_ignores_global_mask_batch_size(tmp_path, monkeypatch):
     media_path.write_bytes(b"same-video")
     entry = ProcessEntry(str(media_path), 0, 10, 30.0, file_signature="sha256:same-video")
     options = make_options({"faceswap": {}})
-    monkeypatch.setattr(roop.globals, "active_resume_job_key", "resume-job-x", raising=False)
-    monkeypatch.setattr(roop.globals.CFG, "mask_batch_size", 32, raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_job_key", "resume-job-x", raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "mask_batch_size", 32, raising=False)
     sig_lo = get_entry_signature(entry, options, "File")
-    monkeypatch.setattr(roop.globals.CFG, "mask_batch_size", 128, raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "mask_batch_size", 128, raising=False)
     sig_hi = get_entry_signature(entry, options, "File")
     assert sig_lo == sig_hi
 
@@ -429,10 +429,10 @@ def test_entry_signature_uses_effective_single_batch_workers(tmp_path, monkeypat
     entry = ProcessEntry(str(media_path), 0, 10, 30.0)
     options = make_options({"faceswap": {}})
 
-    monkeypatch.setattr(roop.globals.CFG, "single_batch_workers", 2, raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "single_batch_workers", 2, raising=False)
     sig_a = get_entry_signature(entry, options, "File")
 
-    monkeypatch.setattr(roop.globals.CFG, "single_batch_workers", 4, raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "single_batch_workers", 4, raising=False)
     sig_b = get_entry_signature(entry, options, "File")
 
     assert sig_a == sig_b
@@ -462,15 +462,15 @@ def test_entry_signature_uses_resume_job_key_instead_of_runtime_face_embeddings(
     media_path.write_bytes(b"same-video")
     options = make_options({"faceswap": {}})
     entry = ProcessEntry(str(media_path), 0, 10, 30.0, file_signature="sha256:same-video")
-    monkeypatch.setattr(roop.globals, "active_resume_job_key", "resume-job-stable", raising=False)
-    monkeypatch.setattr(roop.globals, "active_resume_key", "resume-key-123", raising=False)
-    roop.globals.INPUT_FACESETS[:] = [SimpleNamespace(faces=[SimpleNamespace(embedding=np.array([1.0]), mask_offsets=[0])])]
-    roop.globals.TARGET_FACES[:] = [SimpleNamespace(embedding=np.array([2.0]))]
+    monkeypatch.setattr(roop.config.globals, "active_resume_job_key", "resume-job-stable", raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_key", "resume-key-123", raising=False)
+    roop.config.globals.INPUT_FACESETS[:] = [SimpleNamespace(faces=[SimpleNamespace(embedding=np.array([1.0]), mask_offsets=[0])])]
+    roop.config.globals.TARGET_FACES[:] = [SimpleNamespace(embedding=np.array([2.0]))]
 
     sig_a = get_entry_signature(entry, options, "File")
 
-    roop.globals.INPUT_FACESETS[:] = [SimpleNamespace(faces=[SimpleNamespace(embedding=np.array([999.0]), mask_offsets=[0])])]
-    roop.globals.TARGET_FACES[:] = [SimpleNamespace(embedding=np.array([555.0]))]
+    roop.config.globals.INPUT_FACESETS[:] = [SimpleNamespace(faces=[SimpleNamespace(embedding=np.array([999.0]), mask_offsets=[0])])]
+    roop.config.globals.TARGET_FACES[:] = [SimpleNamespace(embedding=np.array([555.0]))]
 
     sig_b = get_entry_signature(entry, options, "File")
 
@@ -482,13 +482,13 @@ def test_entry_signature_uses_resume_key_when_no_resume_job_key(tmp_path, monkey
     media_path.write_bytes(b"same-video")
     options = make_options({"faceswap": {}})
     entry = ProcessEntry(str(media_path), 0, 10, 30.0, file_signature="sha256:same-video")
-    monkeypatch.setattr(roop.globals, "active_resume_job_key", None, raising=False)
-    monkeypatch.setattr(roop.globals, "active_resume_key", "resume-key-only", raising=False)
-    roop.globals.INPUT_FACESETS[:] = [SimpleNamespace(faces=[SimpleNamespace(embedding=np.array([1.0]), mask_offsets=[0])])]
-    roop.globals.TARGET_FACES[:] = [SimpleNamespace(embedding=np.array([2.0]))]
+    monkeypatch.setattr(roop.config.globals, "active_resume_job_key", None, raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_key", "resume-key-only", raising=False)
+    roop.config.globals.INPUT_FACESETS[:] = [SimpleNamespace(faces=[SimpleNamespace(embedding=np.array([1.0]), mask_offsets=[0])])]
+    roop.config.globals.TARGET_FACES[:] = [SimpleNamespace(embedding=np.array([2.0]))]
 
     sig_a = get_entry_signature(entry, options, "File")
-    roop.globals.INPUT_FACESETS[:] = [SimpleNamespace(faces=[SimpleNamespace(embedding=np.array([999.0]), mask_offsets=[0])])]
+    roop.config.globals.INPUT_FACESETS[:] = [SimpleNamespace(faces=[SimpleNamespace(embedding=np.array([999.0]), mask_offsets=[0])])]
     sig_b = get_entry_signature(entry, options, "File")
     assert sig_a == sig_b
 
@@ -498,13 +498,13 @@ def test_entry_job_key_uses_active_resume_job_key_when_available(tmp_path, monke
     media_path.write_bytes(b"same-video")
     options = make_options({"faceswap": {}})
     entry = ProcessEntry(str(media_path), 0, 10, 30.0, file_signature="sha256:same-video")
-    monkeypatch.setattr(roop.globals, "active_resume_job_key", "resume-job-123", raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_job_key", "resume-job-123", raising=False)
 
     job_key_a = get_entry_job_key(entry, options)
 
-    monkeypatch.setattr(roop.globals, "active_resume_job_key", "resume-job-123", raising=False)
-    monkeypatch.setattr(roop.globals, "active_resume_key", "resume-snapshot-b", raising=False)
-    monkeypatch.setattr(roop.globals.CFG, "detect_pack_frame_count", 1024, raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_job_key", "resume-job-123", raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_key", "resume-snapshot-b", raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "detect_pack_frame_count", 1024, raising=False)
     job_key_b = get_entry_job_key(entry, options)
 
     assert job_key_a == job_key_b
@@ -512,16 +512,16 @@ def test_entry_job_key_uses_active_resume_job_key_when_available(tmp_path, monke
 
 def test_get_compose_worker_count_uses_cfg_max_threads_when_order_is_safe(monkeypatch):
     executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
-    monkeypatch.setattr(roop.globals.CFG, "max_threads", 4, raising=False)
-    monkeypatch.setattr(roop.globals, "no_face_action", eNoFaceAction.USE_ORIGINAL_FRAME, raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "max_threads", 4, raising=False)
+    monkeypatch.setattr(roop.config.globals, "no_face_action", eNoFaceAction.USE_ORIGINAL_FRAME, raising=False)
 
     assert executor.get_compose_worker_count() == 4
 
 
 def test_get_compose_worker_count_falls_back_to_single_thread_for_use_last_swapped(monkeypatch):
     executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
-    monkeypatch.setattr(roop.globals.CFG, "max_threads", 4, raising=False)
-    monkeypatch.setattr(roop.globals, "no_face_action", eNoFaceAction.USE_LAST_SWAPPED, raising=False)
+    monkeypatch.setattr(roop.config.globals.CFG, "max_threads", 4, raising=False)
+    monkeypatch.setattr(roop.config.globals, "no_face_action", eNoFaceAction.USE_LAST_SWAPPED, raising=False)
 
     assert executor.get_compose_worker_count() == 1
 
@@ -534,13 +534,13 @@ def test_prepare_job_preserves_cache_when_only_resume_snapshot_key_changes(tmp_p
     executor.jobs_root = tmp_path / "jobs"
     memory_plan = {"chunk_size": 96}
 
-    monkeypatch.setattr(roop.globals, "active_resume_job_key", "resume-job-123", raising=False)
-    monkeypatch.setattr(roop.globals, "active_resume_key", "resume-snapshot-a", raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_job_key", "resume-job-123", raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_key", "resume-snapshot-a", raising=False)
     job_dir_a, _manifest_a = executor.prepare_job(entry, memory_plan)
     stale_marker = job_dir_a / "stale.bin"
     stale_marker.write_bytes(b"old-cache")
 
-    monkeypatch.setattr(roop.globals, "active_resume_key", "resume-snapshot-b", raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_key", "resume-snapshot-b", raising=False)
     job_dir_b, manifest_b = executor.prepare_job(entry, memory_plan)
 
     assert job_dir_a == job_dir_b
@@ -555,8 +555,8 @@ def test_prepare_job_wipes_cache_when_blend_ratio_changes(tmp_path, monkeypatch)
     memory_plan = {"chunk_size": 96}
     jobs_root = tmp_path / "jobs"
 
-    monkeypatch.setattr(roop.globals, "active_resume_job_key", "resume-job-123", raising=False)
-    monkeypatch.setattr(roop.globals, "active_resume_key", "snap", raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_job_key", "resume-job-123", raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_resume_key", "snap", raising=False)
 
     executor_a = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
     executor_a.jobs_root = jobs_root
@@ -581,7 +581,7 @@ def test_cleanup_job_dir_preserves_processing_cache_for_resume(tmp_path, monkeyp
     job_dir = tmp_path / "job-cache"
     job_dir.mkdir()
     (job_dir / "manifest.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(roop.globals, "processing", True, raising=False)
+    monkeypatch.setattr(roop.config.globals, "processing", True, raising=False)
 
     executor.cleanup_job_dir(job_dir)
 
@@ -630,10 +630,10 @@ def test_completed_video_job_skips_full_pipeline_when_output_exists(tmp_path, mo
     job_dir = tmp_path / "job-cache"
     job_dir.mkdir()
 
-    monkeypatch.setattr("roop.staged_executor.cv2.VideoCapture", lambda _: FakeCapture())
-    monkeypatch.setattr("roop.staged_executor.resolve_memory_plan", lambda width, height: dict(memory_plan))
-    monkeypatch.setattr("roop.staged_executor.describe_memory_plan", lambda plan: "memory-plan")
-    monkeypatch.setattr("roop.staged_executor.set_memory_status", lambda status: None)
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.cv2.VideoCapture", lambda _: FakeCapture())
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.resolve_memory_plan", lambda width, height: dict(memory_plan))
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.describe_memory_plan", lambda plan: "memory-plan")
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.set_memory_status", lambda status: None)
     monkeypatch.setattr(executor, "prepare_job", lambda current_entry, current_plan: (job_dir, dict(manifest)))
     monkeypatch.setattr(
         executor,
@@ -644,3 +644,4 @@ def test_completed_video_job_skips_full_pipeline_when_output_exists(tmp_path, mo
     executor.process_video_entry_full_frames(entry, 0)
 
     assert executor.completed_units == 10
+

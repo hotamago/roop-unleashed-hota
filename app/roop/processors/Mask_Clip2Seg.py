@@ -1,4 +1,4 @@
-import cv2
+﻿import cv2
 import numpy as np
 import torch
 import threading
@@ -6,12 +6,13 @@ from torchvision import transforms
 from clip.clipseg import CLIPDensePredT
 import numpy as np
 
-from roop.typing import Frame
+from roop.processors.base import BaseProcessor
+from roop.config.types import Frame
 
 THREAD_LOCK_CLIP = threading.Lock()
 
 
-class Mask_Clip2Seg():
+class Mask_Clip2Seg(BaseProcessor):
     plugin_options:dict = None
     model_clip = None
 
@@ -91,4 +92,5 @@ class Mask_Clip2Seg():
 
     def Release(self):
         self.model_clip = None
+
 

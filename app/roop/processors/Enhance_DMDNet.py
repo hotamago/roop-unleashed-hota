@@ -1,4 +1,4 @@
-from typing import Any, List, Callable
+﻿from typing import Any, List, Callable
 import cv2 
 import numpy as np
 import torch
@@ -12,13 +12,14 @@ from math import sqrt
 
 from torchvision.transforms.functional import normalize
 
-from roop.typing import Face, Frame, FaceSet
+from roop.processors.base import BaseProcessor
+from roop.config.types import Face, Frame, FaceSet
 
 
 THREAD_LOCK_DMDNET = threading.Lock()
 
 
-class Enhance_DMDNet():
+class Enhance_DMDNet(BaseProcessor):
     # FIX: processorname and type are intentionally class-level (read-only identity constants)
     processorname = 'dmdnet'
     type = 'enhance'
@@ -899,3 +900,4 @@ class UpResBlock(nn.Module):
     def forward(self, x):
         out = x + self.Model(x)
         return out
+

@@ -1,9 +1,9 @@
-from types import SimpleNamespace
+﻿from types import SimpleNamespace
 
 import numpy as np
 
-import roop.globals
-from roop.ProcessMgr import ProcessMgr
+import roop.config.globals
+from roop.pipeline.batch_executor import ProcessMgr
 
 
 class FakeSingleBatchProcessor:
@@ -163,7 +163,7 @@ def test_process_mgr_reuses_single_batch_worker_sessions_across_calls(monkeypatc
 def test_process_mgr_single_batch_worker_count_uses_memory_plan(monkeypatch):
     mgr = ProcessMgr(None)
     processor = FakeSingleBatchProcessor()
-    monkeypatch.setattr(roop.globals, "active_memory_plan", {"single_batch_workers": 3}, raising=False)
+    monkeypatch.setattr(roop.config.globals, "active_memory_plan", {"single_batch_workers": 3}, raising=False)
 
     assert mgr.get_single_batch_worker_count(processor) == 3
 
@@ -171,9 +171,9 @@ def test_process_mgr_single_batch_worker_count_uses_memory_plan(monkeypatch):
 def test_process_mgr_single_batch_worker_count_caps_gpu_without_memory_plan(monkeypatch):
     mgr = ProcessMgr(None)
     processor = FakeSingleBatchProcessor()
-    monkeypatch.setattr(roop.globals, "active_memory_plan", None, raising=False)
-    monkeypatch.setattr(roop.globals, "CFG", SimpleNamespace(single_batch_workers=4), raising=False)
-    monkeypatch.setattr("roop.ProcessMgr.resolve_single_batch_workers", lambda configured_workers: (1, configured_workers, "GPU-safe cap"))
+    monkeypatch.setattr(roop.config.globals, "active_memory_plan", None, raising=False)
+    monkeypatch.setattr(roop.config.globals, "CFG", SimpleNamespace(single_batch_workers=4), raising=False)
+    monkeypatch.setattr("roop.pipeline.batch_executor.resolve_single_batch_workers", lambda configured_workers: (1, configured_workers, "GPU-safe cap"))
 
     assert mgr.get_single_batch_worker_count(processor) == 1
 
@@ -197,3 +197,4 @@ def test_process_mgr_parallelizes_single_batch_enhancers(monkeypatch):
 
     assert set(outputs.keys()) == {"task_a", "task_b"}
     assert all(isinstance(value, np.ndarray) for value in outputs.values())
+

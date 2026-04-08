@@ -1,4 +1,4 @@
-import copy
+﻿import copy
 import json
 import os
 from pathlib import Path
@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import numpy as np
 
-import roop.globals
+import roop.config.globals
 import ui.globals
-from roop.FaceSet import FaceSet
-from roop.ProcessEntry import ProcessEntry
+from roop.pipeline.faceset import FaceSet
+from roop.pipeline.entry import ProcessEntry
 import ui.tabs.faceswap_tab as faceswap_tab
 
 
@@ -20,8 +20,8 @@ def make_face(mask_offsets=None):
 def test_build_resume_payload_captures_sources_targets_and_settings(monkeypatch):
     source_face_set = FaceSet()
     source_face_set.faces.append(make_face([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]))
-    roop.globals.INPUT_FACESETS.append(source_face_set)
-    roop.globals.TARGET_FACES.append(SimpleNamespace(embedding=[0.1, 0.2, 0.3]))
+    roop.config.globals.INPUT_FACESETS.append(source_face_set)
+    roop.config.globals.TARGET_FACES.append(SimpleNamespace(embedding=[0.1, 0.2, 0.3]))
     ui.globals.ui_input_face_refs.append({"type": "image_face", "path": "C:/source.png", "face_index": 0})
     ui.globals.ui_target_face_refs.append({"path": "C:/target.mp4", "frame_number": 12, "face_index": 1})
     faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 5, 25, 30.0)]
@@ -44,7 +44,7 @@ def test_write_and_read_resume_payload_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(faceswap_tab, "list_resume_cache_files", lambda: [], raising=False)
     source_face_set = FaceSet()
     source_face_set.faces.append(make_face())
-    roop.globals.INPUT_FACESETS.append(source_face_set)
+    roop.config.globals.INPUT_FACESETS.append(source_face_set)
     ui.globals.ui_input_face_refs.append({"type": "image_face", "path": "C:/source.png", "face_index": 0})
     faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
 
@@ -116,8 +116,8 @@ def test_pick_resume_job_key_recomputes_when_target_file_identity_changes(monkey
 def test_resume_payload_signature_ignores_performance_only_settings():
     source_face_set = FaceSet()
     source_face_set.faces.append(make_face())
-    roop.globals.INPUT_FACESETS.append(source_face_set)
-    roop.globals.TARGET_FACES.append(SimpleNamespace())
+    roop.config.globals.INPUT_FACESETS.append(source_face_set)
+    roop.config.globals.TARGET_FACES.append(SimpleNamespace())
     ui.globals.ui_input_face_refs.append({"type": "image_face", "path": "C:/source.png", "face_index": 0})
     ui.globals.ui_target_face_refs.append({"path": "C:/target.mp4", "frame_number": 12, "face_index": 0})
     faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
@@ -134,8 +134,8 @@ def test_resume_payload_signature_ignores_performance_only_settings():
 def test_resume_job_signature_ignores_settings_changes():
     source_face_set = FaceSet()
     source_face_set.faces.append(make_face())
-    roop.globals.INPUT_FACESETS.append(source_face_set)
-    roop.globals.TARGET_FACES.append(SimpleNamespace())
+    roop.config.globals.INPUT_FACESETS.append(source_face_set)
+    roop.config.globals.TARGET_FACES.append(SimpleNamespace())
     ui.globals.ui_input_face_refs.append({"type": "image_face", "path": "C:/source.png", "face_index": 0})
     ui.globals.ui_target_face_refs.append({"path": "C:/target.mp4", "frame_number": 12, "face_index": 0})
     faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
@@ -150,15 +150,15 @@ def test_resume_job_signature_ignores_settings_changes():
 def test_resume_signatures_change_when_selected_target_face_identity_changes():
     source_face_set = FaceSet()
     source_face_set.faces.append(make_face())
-    roop.globals.INPUT_FACESETS.append(source_face_set)
+    roop.config.globals.INPUT_FACESETS.append(source_face_set)
     ui.globals.ui_input_face_refs.append({"type": "image_face", "path": "C:/source.png", "face_index": 0})
     ui.globals.ui_target_face_refs.append({"path": "C:/target.mp4", "frame_number": 12, "face_index": 0})
     faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
 
-    roop.globals.TARGET_FACES[:] = [SimpleNamespace(embedding=np.array([1.0, 0.0], dtype=np.float32))]
+    roop.config.globals.TARGET_FACES[:] = [SimpleNamespace(embedding=np.array([1.0, 0.0], dtype=np.float32))]
     payload_a = faceswap_tab.build_resume_payload({"output_method": "File"})
 
-    roop.globals.TARGET_FACES[:] = [SimpleNamespace(embedding=np.array([0.0, 1.0], dtype=np.float32))]
+    roop.config.globals.TARGET_FACES[:] = [SimpleNamespace(embedding=np.array([0.0, 1.0], dtype=np.float32))]
     payload_b = faceswap_tab.build_resume_payload({"output_method": "File"})
 
     assert faceswap_tab.get_resume_payload_signature(payload_a) != faceswap_tab.get_resume_payload_signature(payload_b)
@@ -173,7 +173,7 @@ def test_write_resume_payload_snapshots_source_files_into_resume_cache(tmp_path,
     source_path.write_bytes(b"source-image")
     source_face_set = FaceSet()
     source_face_set.faces.append(make_face())
-    roop.globals.INPUT_FACESETS.append(source_face_set)
+    roop.config.globals.INPUT_FACESETS.append(source_face_set)
     ui.globals.ui_input_face_refs.append({"type": "image_face", "path": str(source_path), "face_index": 0})
     faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
 
@@ -196,7 +196,7 @@ def test_restore_input_faces_from_resume_uses_cached_snapshot_when_original_path
         restored_paths.append(source_path)
         face_set = FaceSet()
         face_set.faces.append(make_face(source_ref.get("mask_offsets")))
-        roop.globals.INPUT_FACESETS.append(face_set)
+        roop.config.globals.INPUT_FACESETS.append(face_set)
         ui.globals.ui_input_face_refs.append(dict(source_ref))
 
     monkeypatch.setattr(faceswap_tab, "append_image_source", fake_append_image_source)
@@ -222,9 +222,9 @@ def test_write_resume_payload_prefers_ui_resume_bound_path_over_last_path(tmp_pa
     source_path.write_bytes(b"source-image")
     source_face_set = FaceSet()
     source_face_set.faces.append(make_face())
-    roop.globals.INPUT_FACESETS.append(source_face_set)
+    roop.config.globals.INPUT_FACESETS.append(source_face_set)
     ui.globals.ui_input_face_refs.append({"type": "image_face", "path": str(source_path), "face_index": 0})
-    roop.globals.TARGET_FACES.append(SimpleNamespace(embedding=np.array([0.1, 0.2], dtype=np.float32)))
+    roop.config.globals.TARGET_FACES.append(SimpleNamespace(embedding=np.array([0.1, 0.2], dtype=np.float32)))
     ui.globals.ui_target_face_refs.append({"path": "C:/target.mp4", "frame_number": 0, "face_index": 0})
     faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
 
@@ -250,9 +250,9 @@ def test_write_resume_payload_sticks_to_ui_resume_last_path_when_file_exists(tmp
     source_path.write_bytes(b"source-image")
     source_face_set = FaceSet()
     source_face_set.faces.append(make_face())
-    roop.globals.INPUT_FACESETS.append(source_face_set)
+    roop.config.globals.INPUT_FACESETS.append(source_face_set)
     ui.globals.ui_input_face_refs.append({"type": "image_face", "path": str(source_path), "face_index": 0})
-    roop.globals.TARGET_FACES.append(SimpleNamespace(embedding=np.array([0.5, 0.25], dtype=np.float32)))
+    roop.config.globals.TARGET_FACES.append(SimpleNamespace(embedding=np.array([0.5, 0.25], dtype=np.float32)))
     ui.globals.ui_target_face_refs.append({"path": "C:/target.mp4", "frame_number": 0, "face_index": 0})
     faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
 
@@ -277,9 +277,9 @@ def test_resolve_equivalent_resume_path_reuses_loaded_file_after_stripping_extra
     source_path.write_bytes(b"source-image")
     source_face_set = FaceSet()
     source_face_set.faces.append(make_face())
-    roop.globals.INPUT_FACESETS.append(source_face_set)
+    roop.config.globals.INPUT_FACESETS.append(source_face_set)
     ui.globals.ui_input_face_refs.append({"type": "image_face", "path": str(source_path), "face_index": 0})
-    roop.globals.TARGET_FACES.append(SimpleNamespace(embedding=np.array([0.1, 0.2], dtype=np.float32)))
+    roop.config.globals.TARGET_FACES.append(SimpleNamespace(embedding=np.array([0.1, 0.2], dtype=np.float32)))
     ui.globals.ui_target_face_refs.append({"path": "C:/target.mp4", "frame_number": 12, "face_index": 0})
     faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
 
@@ -304,7 +304,7 @@ def test_write_resume_payload_reuses_existing_file_for_equivalent_payload(tmp_pa
     source_path.write_bytes(b"source-image")
     source_face_set = FaceSet()
     source_face_set.faces.append(make_face())
-    roop.globals.INPUT_FACESETS.append(source_face_set)
+    roop.config.globals.INPUT_FACESETS.append(source_face_set)
     ui.globals.ui_input_face_refs.append({"type": "image_face", "path": str(source_path), "face_index": 0})
     faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
 
@@ -330,7 +330,7 @@ def test_write_resume_payload_snapshots_transient_target_files_into_resume_cache
     target_path = gradio_root / "upload" / "clip.mp4"
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_bytes(b"target-video")
-    roop.globals.TARGET_FACES.append(SimpleNamespace())
+    roop.config.globals.TARGET_FACES.append(SimpleNamespace())
     ui.globals.ui_target_face_refs.append({"path": str(target_path), "frame_number": 12, "face_index": 0})
     faceswap_tab.list_files_process[:] = [ProcessEntry(str(target_path), 0, 100, 24.0)]
 
@@ -382,7 +382,7 @@ def test_append_target_face_from_resume_uses_cached_snapshot_when_original_path_
         "face_index": 0,
     })
 
-    assert len(roop.globals.TARGET_FACES) == 1
+    assert len(roop.config.globals.TARGET_FACES) == 1
     assert ui.globals.ui_target_face_refs[0]["path"] == str(cached_target)
 
 
@@ -410,7 +410,7 @@ def test_append_target_face_from_resume_prefers_embedding_match_over_saved_index
         "face_embedding": [0.0, 1.0],
     })
 
-    assert roop.globals.TARGET_FACES[0] is right_face
+    assert roop.config.globals.TARGET_FACES[0] is right_face
     assert ui.globals.ui_target_face_refs[0]["face_index"] == 1
 
 
@@ -449,12 +449,12 @@ def test_write_resume_payload_keeps_same_signature_path_between_temp_and_cached_
     stable_source.write_bytes(b"source-image")
     source_face_set = FaceSet()
     source_face_set.faces.append(make_face())
-    roop.globals.INPUT_FACESETS.append(source_face_set)
+    roop.config.globals.INPUT_FACESETS.append(source_face_set)
     ui.globals.ui_input_face_refs.append({"type": "image_face", "path": str(stable_source), "face_index": 0})
     target_temp = gradio_root / "upload" / "clip.mp4"
     target_temp.parent.mkdir(parents=True, exist_ok=True)
     target_temp.write_bytes(b"target-video")
-    roop.globals.TARGET_FACES.append(SimpleNamespace())
+    roop.config.globals.TARGET_FACES.append(SimpleNamespace())
     ui.globals.ui_target_face_refs.append({"path": str(target_temp), "frame_number": 12, "face_index": 0})
     faceswap_tab.list_files_process[:] = [ProcessEntry(str(target_temp), 0, 100, 24.0)]
 
@@ -482,7 +482,7 @@ def test_write_resume_payload_does_not_duplicate_source_assets_on_resume(tmp_pat
     source_path.write_bytes(b"source-image")
     source_face_set = FaceSet()
     source_face_set.faces.append(make_face())
-    roop.globals.INPUT_FACESETS.append(source_face_set)
+    roop.config.globals.INPUT_FACESETS.append(source_face_set)
     ui.globals.ui_input_face_refs.append({"type": "image_face", "path": str(source_path), "face_index": 0})
     faceswap_tab.list_files_process[:] = [ProcessEntry("C:/target.mp4", 0, 100, 24.0)]
 
@@ -514,7 +514,7 @@ def test_write_resume_payload_does_not_duplicate_target_assets_on_resume(tmp_pat
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_bytes(b"target-video")
     faceswap_tab.list_files_process[:] = [ProcessEntry(str(target_path), 0, 100, 24.0)]
-    roop.globals.TARGET_FACES.append(SimpleNamespace())
+    roop.config.globals.TARGET_FACES.append(SimpleNamespace())
     ui.globals.ui_target_face_refs.append({"path": str(target_path), "frame_number": 12, "face_index": 0})
 
     first_resume_path = faceswap_tab.write_resume_payload(faceswap_tab.build_resume_payload({"output_method": "File"}))
@@ -533,3 +533,4 @@ def test_write_resume_payload_does_not_duplicate_target_assets_on_resume(tmp_pat
 
     assert first_resume_path == second_resume_path
     assert len(target_assets) == 1
+

@@ -1,4 +1,4 @@
-from roop.ffmpeg_writer import FFMPEG_VideoWriter
+﻿from roop.media.ffmpeg_writer import FFMPEG_VideoWriter
 
 
 class _DummyPipe:
@@ -23,7 +23,7 @@ def test_ffmpeg_writer_uses_custom_quality_args(monkeypatch):
         captured["cmd"] = cmd
         return _DummyProcess(cmd)
 
-    monkeypatch.setattr("roop.ffmpeg_writer.sp.Popen", fake_popen)
+    monkeypatch.setattr("roop.media.ffmpeg_writer.sp.Popen", fake_popen)
 
     writer = FFMPEG_VideoWriter(
         "out.mp4",
@@ -38,3 +38,4 @@ def test_ffmpeg_writer_uses_custom_quality_args(monkeypatch):
     assert "-cq" in captured["cmd"]
     assert "18" in captured["cmd"]
     assert "-crf" not in captured["cmd"]
+

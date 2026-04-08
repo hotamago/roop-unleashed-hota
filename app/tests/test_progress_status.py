@@ -1,5 +1,5 @@
-import roop.globals
-from roop.progress_status import (
+﻿import roop.config.globals
+from roop.progress.status import (
     get_processing_status_line,
     get_processing_status_markdown,
     publish_processing_progress,
@@ -32,8 +32,8 @@ def test_publish_processing_progress_exposes_pipeline_steps():
     assert "Pipeline: 3/7" in line
     assert "Step: 2/4 faces" in line
     assert "- Pipeline step: 3/7" in markdown
-    assert roop.globals.runtime_processing_state["current_step"] == 3
-    assert roop.globals.runtime_processing_state["total_steps"] == 7
+    assert roop.config.globals.runtime_processing_state["current_step"] == 3
+    assert roop.config.globals.runtime_processing_state["total_steps"] == 7
 
 
 def test_set_processing_message_preserves_pipeline_steps_when_stage_changes():
@@ -42,8 +42,9 @@ def test_set_processing_message_preserves_pipeline_steps_when_stage_changes():
     set_processing_message("Preparing", stage="prepare", current_step=1, total_steps=6)
     set_processing_message("Detecting", stage="detect", detail="Packed detect cache")
 
-    state = roop.globals.runtime_processing_state
+    state = roop.config.globals.runtime_processing_state
     assert state["current_step"] == 1
     assert state["total_steps"] == 6
     assert state["stage"] == "detect"
     assert "Pipeline: 1/6" in get_processing_status_line()
+

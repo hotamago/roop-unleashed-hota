@@ -1,17 +1,18 @@
-import numpy as np
+﻿import numpy as np
 import cv2
 import onnxruntime
 import threading
-import roop.globals
+import roop.config.globals
 
-from roop.onnx_runtime import get_execution_providers_for_processor, resolve_model_path_for_processor
-from roop.typing import Frame
-from roop.utilities import resolve_relative_path
+from roop.onnx.runtime import get_execution_providers_for_processor, resolve_model_path_for_processor
+from roop.processors.base import BaseProcessor
+from roop.config.types import Frame
+from roop.utils import resolve_relative_path
 
 THREAD_LOCK_CLIP = threading.Lock()
 
 
-class Mask_XSeg():
+class Mask_XSeg(BaseProcessor):
     plugin_options:dict = None
 
     model_xseg = None
@@ -82,5 +83,6 @@ class Mask_XSeg():
     def Release(self):
         del self.model_xseg
         self.model_xseg = None
+
 
 

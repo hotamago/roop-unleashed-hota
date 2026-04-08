@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 
-import roop.globals
-from roop.memory import describe_memory_plan, resolve_memory_plan, resolve_single_batch_workers
-from settings import Settings
+import roop.config.globals
+from roop.config.settings import Settings
+from roop.memory.planner import describe_memory_plan, resolve_memory_plan, resolve_single_batch_workers
 
 
 def test_settings_loads_and_persists_manual_stage_tuning(tmp_path):
@@ -39,9 +39,9 @@ def test_settings_loads_and_persists_manual_stage_tuning(tmp_path):
 
 
 def test_resolve_memory_plan_uses_manual_stage_tuning(monkeypatch):
-    monkeypatch.setattr("roop.memory.provider_uses_gpu", lambda: False)
+    monkeypatch.setattr("roop.memory.planner.provider_uses_gpu", lambda: False)
     monkeypatch.setattr(
-        roop.globals,
+        roop.config.globals,
         "CFG",
         SimpleNamespace(
             detect_pack_frame_count=320,
@@ -54,8 +54,8 @@ def test_resolve_memory_plan_uses_manual_stage_tuning(monkeypatch):
         ),
         raising=False,
     )
-    monkeypatch.setattr("roop.memory.get_available_ram_gb", lambda: 24.0)
-    monkeypatch.setattr("roop.memory.get_available_vram_gb", lambda: 10.0)
+    monkeypatch.setattr("roop.memory.planner.get_available_ram_gb", lambda: 24.0)
+    monkeypatch.setattr("roop.memory.planner.get_available_vram_gb", lambda: 10.0)
 
     plan = resolve_memory_plan(1920, 1080)
 
@@ -70,9 +70,9 @@ def test_resolve_memory_plan_uses_manual_stage_tuning(monkeypatch):
 
 
 def test_resolve_memory_plan_caps_gpu_single_batch_workers(monkeypatch):
-    monkeypatch.setattr("roop.memory.provider_uses_gpu", lambda: True)
+    monkeypatch.setattr("roop.memory.planner.provider_uses_gpu", lambda: True)
     monkeypatch.setattr(
-        roop.globals,
+        roop.config.globals,
         "CFG",
         SimpleNamespace(
             detect_pack_frame_count=256,
@@ -85,8 +85,8 @@ def test_resolve_memory_plan_caps_gpu_single_batch_workers(monkeypatch):
         ),
         raising=False,
     )
-    monkeypatch.setattr("roop.memory.get_available_ram_gb", lambda: 24.0)
-    monkeypatch.setattr("roop.memory.get_available_vram_gb", lambda: 10.0)
+    monkeypatch.setattr("roop.memory.planner.get_available_ram_gb", lambda: 24.0)
+    monkeypatch.setattr("roop.memory.planner.get_available_vram_gb", lambda: 10.0)
 
     plan = resolve_memory_plan(1920, 1080)
 
@@ -97,7 +97,7 @@ def test_resolve_memory_plan_caps_gpu_single_batch_workers(monkeypatch):
 
 
 def test_resolve_single_batch_workers_keeps_cpu_parallelism(monkeypatch):
-    monkeypatch.setattr("roop.memory.provider_uses_gpu", lambda: False)
+    monkeypatch.setattr("roop.memory.planner.provider_uses_gpu", lambda: False)
 
     effective_workers, requested_workers, reason = resolve_single_batch_workers(4)
 

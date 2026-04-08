@@ -1,11 +1,11 @@
-import shutil
+﻿import shutil
 import os
 import gradio as gr
-import roop.globals
+import roop.config.globals
 import ui.globals
 import json
-from roop.cache_paths import get_jobs_root
-from roop.memory import describe_memory_plan, resolve_memory_plan
+from roop.utils.cache_paths import get_jobs_root
+from roop.memory.planner import describe_memory_plan, resolve_memory_plan
 
 image_formats = ['jpg','png', 'webp']
 video_formats = ['avi','mkv', 'mp4', 'webm']
@@ -16,51 +16,51 @@ CONFIG_SAVE_DIR = "saved_configs"
 settings_controls = []
 
 def settings_tab():
-    from roop.core import suggest_execution_providers
+    from roop.core.providers import suggest_execution_providers
     global providerlist
 
     settings_controls.clear()
     providerlist = suggest_execution_providers()
     initial_memory_status = describe_memory_plan(resolve_memory_plan())
-    with gr.Tab("⚙ Settings"):
+    with gr.Tab("âš™ Settings"):
         with gr.Row():
             with gr.Column():
-                settings_controls.append(gr.Checkbox(label="Public Server", value=roop.globals.CFG.server_share, elem_id='server_share', interactive=True))
-                settings_controls.append(gr.Checkbox(label='Clear output folder before each run', value=roop.globals.CFG.clear_output, elem_id='clear_output', interactive=True))
+                settings_controls.append(gr.Checkbox(label="Public Server", value=roop.config.globals.CFG.server_share, elem_id='server_share', interactive=True))
+                settings_controls.append(gr.Checkbox(label='Clear output folder before each run', value=roop.config.globals.CFG.clear_output, elem_id='clear_output', interactive=True))
                 output_template = gr.Textbox(
                     label="Filename Output Template", 
                     info="(file extension is added automatically) | Tokens: {file}, {time}, {index}, {timestamp}", 
                     lines=1, 
                     placeholder='{file}_{timestamp}', 
-                    value=roop.globals.CFG.output_template
+                    value=roop.config.globals.CFG.output_template
                     )
             with gr.Column():
-                input_server_name = gr.Textbox(label="Server Name", lines=1, info="Leave blank to run locally", value=roop.globals.CFG.server_name)
+                input_server_name = gr.Textbox(label="Server Name", lines=1, info="Leave blank to run locally", value=roop.config.globals.CFG.server_name)
             with gr.Column():
-                input_server_port = gr.Number(label="Server Port", precision=0, info="Leave at 0 to use default", value=roop.globals.CFG.server_port)
+                input_server_port = gr.Number(label="Server Port", precision=0, info="Leave at 0 to use default", value=roop.config.globals.CFG.server_port)
         with gr.Row():
             with gr.Column():
-                settings_controls.append(gr.Dropdown(providerlist, label="Provider", value=roop.globals.CFG.provider, elem_id='provider', interactive=True))
+                settings_controls.append(gr.Dropdown(providerlist, label="Provider", value=roop.config.globals.CFG.provider, elem_id='provider', interactive=True))
                 chk_det_size = gr.Checkbox(label="Use default Det-Size", value=True, elem_id='default_det_size', interactive=True)
-                settings_controls.append(gr.Checkbox(label="Force CPU for Face Analyser", value=roop.globals.CFG.force_cpu, elem_id='force_cpu', interactive=True))
-                max_threads = gr.Slider(1, 32, value=roop.globals.CFG.max_threads, label="Max. Number of Threads", info='default: 3', step=1.0, interactive=True)
+                settings_controls.append(gr.Checkbox(label="Force CPU for Face Analyser", value=roop.config.globals.CFG.force_cpu, elem_id='force_cpu', interactive=True))
+                max_threads = gr.Slider(1, 32, value=roop.config.globals.CFG.max_threads, label="Max. Number of Threads", info='default: 3', step=1.0, interactive=True)
             with gr.Column():
-                staged_chunk_size = gr.Slider(8, 480, value=roop.globals.CFG.staged_chunk_size, label="Staged Chunk Size", info='Frames scheduled per staged chunk', step=1.0, interactive=True)
-                prefetch_frames = gr.Slider(1, 256, value=roop.globals.CFG.prefetch_frames, label="Prefetch Frames", info='Bounded decode queue size for staged reads', step=1.0, interactive=True)
-                detect_pack_frame_count = gr.Slider(8, 1024, value=roop.globals.CFG.detect_pack_frame_count, label="Detect Pack Frame Count", info='Packed detect metadata frames per cache blob', step=8.0, interactive=True)
-                single_batch_workers = gr.Slider(1, 8, value=roop.globals.CFG.single_batch_workers, label="Single-Batch Workers", info='Parallel worker sessions for models limited to batch=1. GPU runtime is capped to 1 worker to avoid session/VRAM thrash.', step=1.0, interactive=True)
-                settings_controls.append(gr.Dropdown(image_formats, label="Image Output Format", info='default: png', value=roop.globals.CFG.output_image_format, elem_id='output_image_format', interactive=True))
+                staged_chunk_size = gr.Slider(8, 480, value=roop.config.globals.CFG.staged_chunk_size, label="Staged Chunk Size", info='Frames scheduled per staged chunk', step=1.0, interactive=True)
+                prefetch_frames = gr.Slider(1, 256, value=roop.config.globals.CFG.prefetch_frames, label="Prefetch Frames", info='Bounded decode queue size for staged reads', step=1.0, interactive=True)
+                detect_pack_frame_count = gr.Slider(8, 1024, value=roop.config.globals.CFG.detect_pack_frame_count, label="Detect Pack Frame Count", info='Packed detect metadata frames per cache blob', step=8.0, interactive=True)
+                single_batch_workers = gr.Slider(1, 8, value=roop.config.globals.CFG.single_batch_workers, label="Single-Batch Workers", info='Parallel worker sessions for models limited to batch=1. GPU runtime is capped to 1 worker to avoid session/VRAM thrash.', step=1.0, interactive=True)
+                settings_controls.append(gr.Dropdown(image_formats, label="Image Output Format", info='default: png', value=roop.config.globals.CFG.output_image_format, elem_id='output_image_format', interactive=True))
             with gr.Column():
-                swap_batch_size = gr.Slider(1, 256, value=roop.globals.CFG.swap_batch_size, label="Swap Batch Size", info='Requested batch size for swap-capable models', step=1.0, interactive=True)
-                mask_batch_size = gr.Slider(1, 512, value=roop.globals.CFG.mask_batch_size, label="Mask Batch Size", info='Requested batch size for masking models', step=1.0, interactive=True)
-                enhance_batch_size = gr.Slider(1, 128, value=roop.globals.CFG.enhance_batch_size, label="Enhance Batch Size", info='Requested batch size for enhancer models', step=1.0, interactive=True)
-                settings_controls.append(gr.Dropdown(video_codecs, label="Video Codec", info='default: libx264', value=roop.globals.CFG.output_video_codec, elem_id='output_video_codec', interactive=True))
-                settings_controls.append(gr.Dropdown(video_formats, label="Video Output Format", info='default: mp4', value=roop.globals.CFG.output_video_format, elem_id='output_video_format', interactive=True))
-                video_quality = gr.Slider(0, 100, value=roop.globals.CFG.video_quality, label="Video Quality (crf)", info='default: 14', step=1.0, interactive=True)
+                swap_batch_size = gr.Slider(1, 256, value=roop.config.globals.CFG.swap_batch_size, label="Swap Batch Size", info='Requested batch size for swap-capable models', step=1.0, interactive=True)
+                mask_batch_size = gr.Slider(1, 512, value=roop.config.globals.CFG.mask_batch_size, label="Mask Batch Size", info='Requested batch size for masking models', step=1.0, interactive=True)
+                enhance_batch_size = gr.Slider(1, 128, value=roop.config.globals.CFG.enhance_batch_size, label="Enhance Batch Size", info='Requested batch size for enhancer models', step=1.0, interactive=True)
+                settings_controls.append(gr.Dropdown(video_codecs, label="Video Codec", info='default: libx264', value=roop.config.globals.CFG.output_video_codec, elem_id='output_video_codec', interactive=True))
+                settings_controls.append(gr.Dropdown(video_formats, label="Video Output Format", info='default: mp4', value=roop.config.globals.CFG.output_video_format, elem_id='output_video_format', interactive=True))
+                video_quality = gr.Slider(0, 100, value=roop.config.globals.CFG.video_quality, label="Video Quality (crf)", info='default: 14', step=1.0, interactive=True)
             with gr.Column():
                 with gr.Group():
-                    settings_controls.append(gr.Checkbox(label='Use OS temp folder', value=roop.globals.CFG.use_os_temp_folder, elem_id='use_os_temp_folder', interactive=True))
-                    settings_controls.append(gr.Checkbox(label='Show video in browser (re-encodes output)', value=roop.globals.CFG.output_show_video, elem_id='output_show_video', interactive=True))
+                    settings_controls.append(gr.Checkbox(label='Use OS temp folder', value=roop.config.globals.CFG.use_os_temp_folder, elem_id='use_os_temp_folder', interactive=True))
+                    settings_controls.append(gr.Checkbox(label='Show video in browser (re-encodes output)', value=roop.config.globals.CFG.output_show_video, elem_id='output_show_video', interactive=True))
                     memory_status = gr.Markdown(initial_memory_status)
                 button_apply_restart = gr.Button("Restart Server", variant='primary')
                 button_clean_temp = gr.Button("Clean temp folder")
@@ -113,25 +113,25 @@ def load_config(name):
     if not os.path.exists(path):
         gr.Warning(f"Config '{name}' not found!")
         return
-    from settings import Settings
-    roop.globals.CFG = Settings(path)
+    from roop.config.settings import Settings
+    roop.config.globals.CFG = Settings(path)
     gr.Info(f"Config '{name}' loaded! Click 'Restart Server' to fully apply.")
 
 def on_option_changed(evt: gr.SelectData):
     attribname = evt.target.elem_id
     if isinstance(evt.target, gr.Checkbox):
-        if hasattr(roop.globals, attribname):
-            setattr(roop.globals, attribname, evt.selected)
+        if hasattr(roop.config.globals, attribname):
+            setattr(roop.config.globals, attribname, evt.selected)
             return
     elif isinstance(evt.target, gr.Dropdown):
-        if hasattr(roop.globals, attribname):
-            setattr(roop.globals, attribname, evt.value)
+        if hasattr(roop.config.globals, attribname):
+            setattr(roop.config.globals, attribname, evt.value)
             return
     raise gr.Error(f'Unhandled Setting for {evt.target}')
 
 
 def on_settings_changed_misc(new_val, attribname):
-    if hasattr(roop.globals.CFG, attribname):
+    if hasattr(roop.config.globals.CFG, attribname):
         if attribname in (
             'max_threads',
             'video_quality',
@@ -144,7 +144,7 @@ def on_settings_changed_misc(new_val, attribname):
             'enhance_batch_size',
         ):
             new_val = int(new_val)
-        setattr(roop.globals.CFG, attribname, new_val)
+        setattr(roop.config.globals.CFG, attribname, new_val)
     else:
         print("Didn't find attrib!")
     return update_memory_status()
@@ -153,12 +153,12 @@ def on_settings_changed_misc(new_val, attribname):
 def on_settings_changed(evt: gr.SelectData):
     attribname = evt.target.elem_id
     if isinstance(evt.target, gr.Checkbox):
-        if hasattr(roop.globals.CFG, attribname):
-            setattr(roop.globals.CFG, attribname, evt.selected)
+        if hasattr(roop.config.globals.CFG, attribname):
+            setattr(roop.config.globals.CFG, attribname, evt.selected)
             return update_memory_status()
     elif isinstance(evt.target, gr.Dropdown):
-        if hasattr(roop.globals.CFG, attribname):
-            setattr(roop.globals.CFG, attribname, evt.value)
+        if hasattr(roop.config.globals.CFG, attribname):
+            setattr(roop.config.globals.CFG, attribname, evt.value)
             return update_memory_status()
             
     raise gr.Error(f'Unhandled Setting for {evt.target}')
@@ -167,10 +167,10 @@ def clean_temp():
     from ui.main import prepare_environment
     
     ui.globals.ui_input_thumbs.clear()
-    roop.globals.INPUT_FACESETS.clear()
-    roop.globals.TARGET_FACES.clear()
+    roop.config.globals.INPUT_FACESETS.clear()
+    roop.config.globals.TARGET_FACES.clear()
     ui.globals.ui_target_thumbs = []
-    if not roop.globals.CFG.use_os_temp_folder:
+    if not roop.config.globals.CFG.use_os_temp_folder:
         shutil.rmtree(os.environ["TEMP"])
     prepare_environment()
     gr.Info('Temp Files removed')
@@ -180,10 +180,10 @@ def clean_temp():
 def apply_settings(input_server_name, input_server_port, output_template):
     from ui.main import show_msg
 
-    roop.globals.CFG.server_name = input_server_name
-    roop.globals.CFG.server_port = input_server_port
-    roop.globals.CFG.output_template = output_template
-    roop.globals.CFG.save()
+    roop.config.globals.CFG.server_name = input_server_name
+    roop.config.globals.CFG.server_port = input_server_port
+    roop.config.globals.CFG.output_template = output_template
+    roop.config.globals.CFG.save()
     show_msg('Settings saved')
     return update_memory_status()
 
@@ -203,3 +203,4 @@ def clean_processing_cache():
         shutil.rmtree(jobs_dir)
     os.makedirs(jobs_dir, exist_ok=True)
     gr.Info('Processing cache removed')
+

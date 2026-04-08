@@ -1,16 +1,17 @@
-import roop.globals
+﻿import roop.config.globals
 import cv2
 import numpy as np
 import onnx
 import onnxruntime
 
-from roop.onnx_runtime import get_execution_providers_for_processor, resolve_model_path_for_processor
-from roop.typing import Face, Frame
-from roop.utilities import resolve_relative_path
+from roop.onnx.runtime import get_execution_providers_for_processor, resolve_model_path_for_processor
+from roop.processors.base import BaseProcessor
+from roop.config.types import Face, Frame
+from roop.utils import resolve_relative_path
 
 
 
-class FaceSwapInsightFace():
+class FaceSwapInsightFace(BaseProcessor):
     plugin_options:dict = None
     model_swap_insightface = None
     source_latent_cache = None
@@ -132,6 +133,7 @@ class FaceSwapInsightFace():
 
 
                 
+
 
 
 
