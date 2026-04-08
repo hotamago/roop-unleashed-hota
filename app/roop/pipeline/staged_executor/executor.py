@@ -598,6 +598,21 @@ class StagedBatchExecutor:
             self.completed_units += frame_count
             self.update_progress("resume", detail=f"Skipping completed cached video {os.path.basename(entry.filename)}", step_completed=frame_count, step_total=frame_count, step_unit="frames", force_log=True)
             return
+        if self.can_direct_encode_without_processing(entry):
+            self.ensure_direct_video_output(entry, index, frame_count, endframe)
+            manifest["stages"] = {
+                "detect": True,
+                "swap": True,
+                "mask": True,
+                "enhance": True,
+                "composite": True,
+            }
+            manifest["frame_count"] = frame_count
+            manifest["task_count"] = 0
+            manifest["status"] = "completed"
+            write_json(job_dir / "manifest.json", manifest)
+            self.cleanup_job_dir(job_dir)
+            return
         self.update_progress("prepare", detail="Preparing packed detect cache and stage pipeline", step_completed=0, step_total=frame_count, step_unit="frames", force_log=True)
         stages = merge_stage_defaults(manifest.get("stages"), {
             "detect": False,
@@ -1699,8 +1714,10 @@ StagedBatchExecutor.ensure_full_enhance_stage = enhance_stage_lib.ensure_full_en
 StagedBatchExecutor.ensure_enhance_stage = enhance_stage_lib.ensure_enhance_stage
 
 StagedBatchExecutor.get_compose_worker_count = compose_stage_lib.get_compose_worker_count
+StagedBatchExecutor.can_direct_encode_without_processing = compose_stage_lib.can_direct_encode_without_processing
 StagedBatchExecutor.compose_frame_from_cache = compose_stage_lib.compose_frame_from_cache
 StagedBatchExecutor.ensure_full_compose_stage = compose_stage_lib.ensure_full_compose_stage
+StagedBatchExecutor.ensure_direct_video_output = compose_stage_lib.ensure_direct_video_output
 StagedBatchExecutor.ensure_full_encode_stage = compose_stage_lib.ensure_full_encode_stage
 StagedBatchExecutor.compose_image_from_cache = compose_stage_lib.compose_image_from_cache
 StagedBatchExecutor.compose_chunk = compose_stage_lib.compose_chunk

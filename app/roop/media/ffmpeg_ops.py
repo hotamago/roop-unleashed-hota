@@ -5,6 +5,7 @@ import roop.config.globals
 import roop.utils as util
 
 from typing import List, Any
+from roop.media.video_io import resolve_video_writer_config
 
 def run_ffmpeg(args: List[str]) -> bool:
     commands = ['ffmpeg', '-hide_banner', '-hwaccel', 'auto', '-y', '-loglevel', roop.config.globals.log_level]
@@ -17,6 +18,40 @@ def run_ffmpeg(args: List[str]) -> bool:
         print("Running ffmpeg failed! Commandline:")
         print (" ".join(commands))
     return False
+
+
+def transcode_video_range(
+    original_video: str,
+    output_video: str,
+    start_frame: int,
+    end_frame: int,
+    fps: float,
+    include_audio: bool,
+) -> bool:
+    writer_config = resolve_video_writer_config(roop.config.globals.video_encoder, roop.config.globals.video_quality)
+    start_frame = max(0, int(start_frame or 0))
+    end_frame = max(start_frame + 1, int(end_frame or 0))
+    fps = float(fps or util.detect_fps(original_video) or 1.0)
+    start_time = start_frame / fps
+    num_frames = max(1, end_frame - start_frame)
+    commands = [
+        "-ss",
+        format(start_time, ".6f"),
+        "-i",
+        original_video,
+        "-frames:v",
+        str(num_frames),
+        "-c:v",
+        writer_config["codec"],
+    ]
+    commands.extend(writer_config["quality_args"])
+    commands.extend(writer_config["ffmpeg_params"])
+    if include_audio:
+        commands.extend(["-c:a", "aac", "-shortest"])
+    else:
+        commands.append("-an")
+    commands.append(output_video)
+    return run_ffmpeg(commands)
 
 
 

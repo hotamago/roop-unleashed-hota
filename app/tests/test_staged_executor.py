@@ -85,11 +85,9 @@ def test_ensure_enhance_stage_flushes_cache_once_per_chunk(tmp_path, monkeypatch
     def fake_read_stage_cache_map(path):
         if path == enhance_cache_path:
             return {}
+        if path == swap_cache_path:
+            return dict(input_cache)
         raise AssertionError(path)
-
-    def fake_read_stage_cache_keys(path, keys):
-        assert path == swap_cache_path
-        return {key: input_cache[key] for key in keys}
 
     def fake_write_stage_cache_map(path, cache_map):
         assert path == enhance_cache_path
@@ -97,7 +95,6 @@ def test_ensure_enhance_stage_flushes_cache_once_per_chunk(tmp_path, monkeypatch
 
     monkeypatch.setattr("roop.pipeline.staged_executor.enhance_stage.ProcessMgr", FakeProcessMgr)
     monkeypatch.setattr(executor, "read_stage_cache_map", fake_read_stage_cache_map)
-    monkeypatch.setattr(executor, "read_stage_cache_keys", fake_read_stage_cache_keys)
     monkeypatch.setattr(executor, "write_stage_cache_map", fake_write_stage_cache_map)
     monkeypatch.setattr(executor, "update_progress", lambda *args, **kwargs: None)
 
@@ -134,17 +131,11 @@ def test_process_full_mask_batch_falls_back_when_batch_masks_are_broken(tmp_path
             ]
 
     monkeypatch.setattr(executor, "update_progress", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        executor,
-        "read_stage_cache_keys",
-        lambda _path, keys: {key: input_cache[key] for key in keys},
-    )
-
     processor = FakeBrokenMaskProcessor()
     executor.process_full_mask_batch(
         task_batch,
         original_batch,
-        tmp_path / "swap.bin",
+        input_cache,
         output_cache,
         tmp_path / "mask.bin",
         None,
@@ -186,16 +177,10 @@ def test_process_full_mask_batch_uses_single_batch_worker_pool_for_non_batch_pro
             }
 
     monkeypatch.setattr(executor, "update_progress", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        executor,
-        "read_stage_cache_keys",
-        lambda _path, keys: {key: input_cache[key] for key in keys},
-    )
-
     executor.process_full_mask_batch(
         task_batch,
         original_batch,
-        tmp_path / "swap.bin",
+        input_cache,
         output_cache,
         tmp_path / "mask.bin",
         FakeProcessMgr(),
@@ -728,4 +713,51 @@ def test_completed_video_job_skips_full_pipeline_when_output_exists(tmp_path, mo
     executor.process_video_entry_full_frames(entry, 0)
 
     assert executor.completed_units == 10
+
+
+def test_process_video_entry_full_frames_uses_direct_encode_fast_path_when_no_processors(tmp_path, monkeypatch):
+    executor = StagedBatchExecutor("File", None, make_options({}))
+    source_path = tmp_path / "clip.mp4"
+    source_path.write_bytes(b"video")
+    output_path = tmp_path / "clip_out.mp4"
+    entry = ProcessEntry(str(source_path), 5, 21, 30.0)
+    entry.finalname = str(output_path)
+
+    class FakeCapture:
+        def get(self, prop):
+            if prop == 3:
+                return 1920
+            if prop == 4:
+                return 1080
+            return 0
+
+        def release(self):
+            return None
+
+    job_dir = tmp_path / "job-cache"
+    job_dir.mkdir()
+    manifest = {"status": "running", "stages": {}}
+    direct_calls = []
+
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.cv2.VideoCapture", lambda _path: FakeCapture())
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.resolve_memory_plan", lambda width, height: {"prefetch_frames": 24})
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.describe_memory_plan", lambda plan: "memory-plan")
+    monkeypatch.setattr("roop.pipeline.staged_executor.executor.set_memory_status", lambda status: None)
+    monkeypatch.setattr(executor, "prepare_job", lambda current_entry, current_plan: (job_dir, dict(manifest)))
+    monkeypatch.setattr(
+        executor,
+        "ensure_direct_video_output",
+        lambda current_entry, current_index, frame_count, endframe: direct_calls.append(
+            (current_entry.filename, current_index, frame_count, endframe)
+        ),
+    )
+    monkeypatch.setattr(
+        executor,
+        "ensure_full_detect_stage",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("detect stage should be skipped")),
+    )
+
+    executor.process_video_entry_full_frames(entry, 3)
+
+    assert direct_calls == [(str(source_path), 3, 16, 21)]
 

@@ -40,6 +40,47 @@ def should_use_cached_fallback_fast_path():
     )
 
 
+def can_direct_encode_without_processing(executor, entry):
+    return (
+        executor.output_method == "File"
+        and not executor.swap_enabled
+        and executor.mask_name is None
+        and executor.enhancer_name is None
+        and not util.has_extension(entry.filename, ["gif"])
+        and bool(getattr(entry, "finalname", None))
+    )
+
+
+def ensure_direct_video_output(executor, entry, index, frame_count, endframe):
+    destination = util.replace_template(entry.finalname, index=index)
+    Path(os.path.dirname(destination)).mkdir(parents=True, exist_ok=True)
+    executor.update_progress(
+        "composite",
+        detail="Direct ffmpeg video encode without processing stages",
+        step_completed=0,
+        step_total=frame_count,
+        step_unit="frames",
+        force_log=True,
+    )
+    ffmpeg.transcode_video_range(
+        entry.filename,
+        destination,
+        entry.startframe,
+        endframe,
+        entry.fps or util.detect_fps(entry.filename),
+        include_audio=not roop.config.globals.skip_audio,
+    )
+    executor.completed_units += frame_count
+    executor.update_progress(
+        "mux",
+        detail="Completed direct video encode",
+        step_completed=frame_count,
+        step_total=frame_count,
+        step_unit="frames",
+        force_log=True,
+    )
+
+
 def prepare_fallback_mgr(executor, fallback_mgr=None, last_result_frame=None):
     if fallback_mgr is None:
         fallback_mgr = executor.get_fallback_mgr()
@@ -364,9 +405,11 @@ def should_skip_completed_output(_executor, entry, manifest):
 
 
 __all__ = [
+    "can_direct_encode_without_processing",
     "compose_chunk",
     "compose_frame_from_cache",
     "compose_image_from_cache",
+    "ensure_direct_video_output",
     "ensure_full_compose_stage",
     "ensure_full_encode_stage",
     "get_compose_worker_count",

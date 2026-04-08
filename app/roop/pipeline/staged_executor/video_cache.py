@@ -4,9 +4,11 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import roop.config.globals
 
 from roop.media.ffmpeg_writer import FFMPEG_VideoWriter
-from roop.media.video_io import open_video_capture
+from roop.media.video_io import ffmpeg_supports_encoder, open_video_capture
+from roop.memory import provider_uses_gpu
 
 
 def normalize_cache_image(image):
@@ -33,7 +35,7 @@ class VideoStageCache:
 
     def __init__(
         self,
-        codec="libx264",
+        codec="auto",
         crf=4,
         preset="veryfast",
         max_frame_extent=2048,
@@ -46,6 +48,41 @@ class VideoStageCache:
         self.max_frame_extent = max(64, int(max_frame_extent))
         self.fps = max(1, int(fps))
         self.output_pix_fmt = output_pix_fmt
+
+    def _resolve_writer_config(self):
+        if self.codec not in (None, "", "auto"):
+            return {
+                "codec": self.codec,
+                "quality_args": ["-crf", str(self.crf)],
+                "ffmpeg_params": ["-preset", self.preset, "-g", "1", "-bf", "0"],
+                "allow_fallback": False,
+            }
+        if provider_uses_gpu() and ffmpeg_supports_encoder("h264_nvenc"):
+            return {
+                "codec": "h264_nvenc",
+                "quality_args": ["-cq", "0"],
+                "ffmpeg_params": [
+                    "-rc",
+                    "vbr",
+                    "-b:v",
+                    "0",
+                    "-preset",
+                    "p1",
+                    "-gpu",
+                    str(roop.config.globals.cuda_device_id),
+                    "-g",
+                    "1",
+                    "-bf",
+                    "0",
+                ],
+                "allow_fallback": True,
+            }
+        return {
+            "codec": "libx264",
+            "quality_args": ["-crf", "0"],
+            "ffmpeg_params": ["-preset", "ultrafast", "-g", "1", "-bf", "0"],
+            "allow_fallback": False,
+        }
 
     def _resolve_paths(self, cache_path):
         base_path = Path(cache_path)
@@ -135,18 +172,15 @@ class VideoStageCache:
             packed_frames.append(frame_canvas)
         return index, packed_frames
 
-    def _write_video(self, video_path, frames):
-        if not frames:
-            video_path.unlink(missing_ok=True)
-            return
+    def _write_video_with_config(self, video_path, frames, writer_config):
         writer = FFMPEG_VideoWriter(
             str(video_path),
             (frames[0].shape[1], frames[0].shape[0]),
             self.fps,
-            codec=self.codec,
+            codec=writer_config["codec"],
             crf=self.crf,
-            quality_args=["-crf", str(self.crf)],
-            ffmpeg_params=["-preset", self.preset, "-g", "1", "-bf", "0"],
+            quality_args=writer_config["quality_args"],
+            ffmpeg_params=writer_config["ffmpeg_params"],
             output_pix_fmt=self.output_pix_fmt,
             video_filter=None,
         )
@@ -155,6 +189,32 @@ class VideoStageCache:
                 writer.write_frame(frame)
         finally:
             writer.close()
+
+    def _video_is_decodable(self, video_path):
+        capture = open_video_capture(str(video_path))
+        try:
+            ok, frame = capture.read()
+            return bool(ok and frame is not None)
+        finally:
+            capture.release()
+
+    def _write_video(self, video_path, frames):
+        if not frames:
+            video_path.unlink(missing_ok=True)
+            return
+        writer_config = self._resolve_writer_config()
+        self._write_video_with_config(video_path, frames, writer_config)
+        if writer_config.get("allow_fallback") and not self._video_is_decodable(video_path):
+            video_path.unlink(missing_ok=True)
+            self._write_video_with_config(
+                video_path,
+                frames,
+                {
+                    "codec": "libx264",
+                    "quality_args": ["-crf", "0"],
+                    "ffmpeg_params": ["-preset", "ultrafast", "-g", "1", "-bf", "0"],
+                },
+            )
 
     def _read_video_frame(self, capture, frame_idx):
         if frame_idx > 0:
