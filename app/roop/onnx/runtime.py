@@ -3,7 +3,7 @@
 from roop.onnx.batch import ensure_native_batch_model
 
 
-NATIVE_BATCH_PATCH_PROCESSORS = {"faceswap"}
+NATIVE_BATCH_PATCH_PROCESSORS = set()
 TENSORRT_SAFE_PROCESSORS = {"faceswap"}
 
 

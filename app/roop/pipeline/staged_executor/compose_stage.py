@@ -32,11 +32,42 @@ def get_compose_worker_count(executor):
     return resolved_workers
 
 
-def compose_frame_from_cache(executor, compose_mgr, frame, frame_meta, input_cache, enhance_cache, fallback_mgr=None):
+def should_use_cached_fallback_fast_path():
+    return roop.config.globals.no_face_action in (
+        eNoFaceAction.USE_ORIGINAL_FRAME,
+        eNoFaceAction.USE_LAST_SWAPPED,
+        eNoFaceAction.SKIP_FRAME,
+    )
+
+
+def prepare_fallback_mgr(executor, fallback_mgr=None, last_result_frame=None):
+    if fallback_mgr is None:
+        fallback_mgr = executor.get_fallback_mgr()
+    if fallback_mgr.last_swapped_frame is None and last_result_frame is not None:
+        fallback_mgr.last_swapped_frame = last_result_frame.copy()
+        fallback_mgr.num_frames_no_face = 0
+    return fallback_mgr
+
+
+def resolve_cached_fallback_frame(executor, frame, fallback_mgr=None, last_result_frame=None):
+    no_face_action = roop.config.globals.no_face_action
+    if no_face_action == eNoFaceAction.USE_ORIGINAL_FRAME:
+        return frame
+    if no_face_action == eNoFaceAction.SKIP_FRAME:
+        return None
+    fallback_mgr = prepare_fallback_mgr(executor, fallback_mgr, last_result_frame)
+    if no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
+        max_reuse_frame = max(0, int(getattr(getattr(fallback_mgr, "options", None), "max_num_reuse_frame", 0)))
+        if fallback_mgr.last_swapped_frame is not None and fallback_mgr.num_frames_no_face < max_reuse_frame:
+            fallback_mgr.num_frames_no_face += 1
+            return fallback_mgr.last_swapped_frame.copy()
+        return frame
+    return fallback_mgr.process_frame(frame)
+
+
+def compose_frame_from_cache(executor, compose_mgr, frame, frame_meta, input_cache, enhance_cache, fallback_mgr=None, last_result_frame=None):
     if frame_meta["fallback"]:
-        if fallback_mgr is None:
-            fallback_mgr = executor.get_fallback_mgr()
-        return fallback_mgr.process_frame(frame)
+        return resolve_cached_fallback_frame(executor, frame, fallback_mgr, last_result_frame)
 
     result = frame.copy()
     for task_meta in frame_meta["tasks"]:
@@ -105,7 +136,7 @@ def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_d
                 writer.write_frame(result)
                 last_result_frame = result.copy()
             if fallback_mgr is not None and result is not None:
-                fallback_mgr.last_swapped_frame = result.copy()
+                fallback_mgr.last_swapped_frame = last_result_frame.copy()
                 fallback_mgr.num_frames_no_face = 0
             executor.completed_units += 1
             processed_frames += 1
@@ -119,8 +150,20 @@ def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_d
 
                 frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
                 if frame_meta["fallback"]:
-                    fallback_mgr = executor.get_fallback_mgr()
-                result = compose_frame_from_cache(executor, compose_mgr, frame, frame_meta, input_cache, enhance_cache, fallback_mgr)
+                    if roop.config.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
+                        fallback_mgr = prepare_fallback_mgr(executor, fallback_mgr, last_result_frame)
+                    elif not should_use_cached_fallback_fast_path():
+                        fallback_mgr = executor.get_fallback_mgr()
+                result = compose_frame_from_cache(
+                    executor,
+                    compose_mgr,
+                    frame,
+                    frame_meta,
+                    input_cache,
+                    enhance_cache,
+                    fallback_mgr,
+                    last_result_frame,
+                )
                 write_composed_frame(result)
         else:
             worker_state = local()
@@ -168,11 +211,20 @@ def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_d
                     frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
                     if frame_meta["fallback"]:
                         flush_all_pending()
-                        fallback_mgr = executor.get_fallback_mgr()
-                        if fallback_mgr.last_swapped_frame is None and last_result_frame is not None:
-                            fallback_mgr.last_swapped_frame = last_result_frame.copy()
-                            fallback_mgr.num_frames_no_face = 0
-                        result = compose_frame_from_cache(executor, compose_mgr, frame, frame_meta, input_cache, enhance_cache, fallback_mgr)
+                        if roop.config.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
+                            fallback_mgr = prepare_fallback_mgr(executor, fallback_mgr, last_result_frame)
+                        elif not should_use_cached_fallback_fast_path():
+                            fallback_mgr = executor.get_fallback_mgr()
+                        result = compose_frame_from_cache(
+                            executor,
+                            compose_mgr,
+                            frame,
+                            frame_meta,
+                            input_cache,
+                            enhance_cache,
+                            fallback_mgr,
+                            last_result_frame,
+                        )
                         write_composed_frame(result)
                         frame_index += 1
                         next_result_index = frame_index
@@ -216,7 +268,8 @@ def ensure_full_encode_stage(executor, entry, index, intermediate_video, frame_c
 
 def compose_image_from_cache(executor, image, job_dir, frame_meta):
     if frame_meta["fallback"]:
-        return executor.get_fallback_mgr().process_frame(image)
+        fallback_mgr = executor.get_fallback_mgr() if not should_use_cached_fallback_fast_path() else None
+        return resolve_cached_fallback_frame(executor, image, fallback_mgr)
     compose_mgr = ProcessMgr(None)
     compose_mgr.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, executor.build_stage_options([]))
     input_cache = executor.read_stage_cache_map(executor.get_stage_cache_path(job_dir / ("mask" if executor.mask_name else "swap")))
@@ -263,6 +316,7 @@ def compose_chunk(executor, entry, chunk_dir, chunk_meta, chunk_state, memory_pl
     )
     stream = StreamWriter((width, height), int(entry.fps or util.detect_fps(entry.filename))) if output_to_cam else None
     fallback_mgr = None
+    last_result_frame = None
 
     try:
         from .video_iter import iter_video_chunk
@@ -272,8 +326,11 @@ def compose_chunk(executor, entry, chunk_dir, chunk_meta, chunk_state, memory_pl
         for frame_number, frame in iter_video_chunk(entry.filename, chunk_meta["start"], chunk_meta["end"], memory_plan["prefetch_frames"]):
             frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
             if frame_meta["fallback"]:
-                fallback_mgr = executor.get_fallback_mgr()
-                result = fallback_mgr.process_frame(frame)
+                if roop.config.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
+                    fallback_mgr = prepare_fallback_mgr(executor, fallback_mgr, last_result_frame)
+                elif not should_use_cached_fallback_fast_path():
+                    fallback_mgr = executor.get_fallback_mgr()
+                result = resolve_cached_fallback_frame(executor, frame, fallback_mgr, last_result_frame)
             else:
                 result = frame.copy()
                 for task_meta in frame_meta["tasks"]:
@@ -289,6 +346,7 @@ def compose_chunk(executor, entry, chunk_dir, chunk_meta, chunk_state, memory_pl
                     writer.write_frame(result)
                 if stream is not None:
                     stream.WriteToStream(result)
+                last_result_frame = result.copy()
             executor.completed_units += 1
             processed_frames += 1
             executor.update_progress("composite", detail="Compositing output frames", step_completed=processed_frames, step_total=total_frames, step_unit="frames")

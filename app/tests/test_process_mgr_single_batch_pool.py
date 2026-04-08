@@ -26,6 +26,26 @@ class FakeSingleBatchProcessor:
         return np.full_like(frame, self.worker_id + 1), 1
 
 
+class FakeSingleBatchMaskProcessor:
+    supports_parallel_single_batch = True
+    batch_size_limit = 1
+
+    def __init__(self, worker_id=0):
+        self.worker_id = worker_id
+        self.released = False
+        self.create_calls = 0
+
+    def CreateWorkerProcessor(self):
+        self.create_calls += 1
+        return FakeSingleBatchMaskProcessor(worker_id=self.worker_id + self.create_calls)
+
+    def Release(self):
+        self.released = True
+
+    def Run(self, image, _keywords):
+        return np.zeros(image.shape[:2] + (1,), dtype=np.float32)
+
+
 class FakeBrokenBatchSwapProcessor:
     supports_batch = True
     batch_size_limit = None
@@ -194,6 +214,26 @@ def test_process_mgr_parallelizes_single_batch_enhancers(monkeypatch):
     ]
 
     outputs = mgr.run_enhance_tasks_batch(tasks, current_frames, FakeSingleBatchProcessor(), batch_size=8)
+
+    assert set(outputs.keys()) == {"task_a", "task_b"}
+    assert all(isinstance(value, np.ndarray) for value in outputs.values())
+
+
+def test_process_mgr_parallelizes_single_batch_masks(monkeypatch):
+    mgr = ProcessMgr(None)
+    mgr.options = SimpleNamespace(masking_text="", show_face_masking=False)
+    monkeypatch.setattr(mgr, "get_single_batch_worker_count", lambda processor: 2)
+
+    tasks = [
+        {"cache_key": "task_a", "aligned_frame": np.zeros((2, 2, 3), dtype=np.uint8)},
+        {"cache_key": "task_b", "aligned_frame": np.zeros((2, 2, 3), dtype=np.uint8)},
+    ]
+    current_frames = [
+        np.full((2, 2, 3), 255, dtype=np.uint8),
+        np.full((2, 2, 3), 255, dtype=np.uint8),
+    ]
+
+    outputs = mgr.run_mask_tasks_batch(tasks, current_frames, FakeSingleBatchMaskProcessor(), batch_size=8)
 
     assert set(outputs.keys()) == {"task_a", "task_b"}
     assert all(isinstance(value, np.ndarray) for value in outputs.values())

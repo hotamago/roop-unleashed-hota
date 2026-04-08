@@ -55,6 +55,18 @@ def get_available_vram_gb() -> Optional[float]:
         return None
 
 
+def resolve_gpu_single_batch_worker_cap(available_vram_gb: Optional[float]) -> int:
+    if available_vram_gb is None:
+        return 2
+    if available_vram_gb >= 20.0:
+        return 4
+    if available_vram_gb >= 14.0:
+        return 3
+    if available_vram_gb >= 10.0:
+        return 2
+    return 1
+
+
 def resolve_single_batch_workers(configured_workers=None) -> tuple[int, int, Optional[str]]:
     requested_workers = _clamp_int(
         configured_workers if configured_workers is not None else getattr(roop.config.globals.CFG, "single_batch_workers", DEFAULT_SINGLE_BATCH_WORKERS),
@@ -63,7 +75,10 @@ def resolve_single_batch_workers(configured_workers=None) -> tuple[int, int, Opt
         8,
     )
     if requested_workers > 1 and provider_uses_gpu():
-        return 1, requested_workers, "GPU-safe cap"
+        gpu_cap = resolve_gpu_single_batch_worker_cap(get_available_vram_gb())
+        effective_workers = min(requested_workers, gpu_cap)
+        if effective_workers != requested_workers:
+            return effective_workers, requested_workers, f"GPU VRAM cap {gpu_cap}"
     return requested_workers, requested_workers, None
 
 

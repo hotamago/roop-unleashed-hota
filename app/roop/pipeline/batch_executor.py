@@ -623,6 +623,31 @@ class ProcessMgr():
         return self.process_mask(processor, task["aligned_frame"], current_frame)
 
 
+    def run_prepared_mask_task(self, prepared_task, processor):
+        return self.process_mask(processor, prepared_task["aligned_frame"], prepared_task["current_frame"])
+
+
+    def run_mask_tasks_batch(self, tasks, current_frames, processor, batch_size: int = 1):
+        del batch_size
+        if not tasks:
+            return {}
+        prepared_tasks = []
+        for task, current_frame in zip(tasks, current_frames):
+            prepared_tasks.append({
+                "cache_key": task["cache_key"],
+                "aligned_frame": task["aligned_frame"],
+                "current_frame": np.ascontiguousarray(current_frame),
+            })
+
+        if self.should_parallelize_single_batch(processor):
+            return self.run_tasks_parallel_single_batch(prepared_tasks, processor, self.run_prepared_mask_task)
+
+        outputs = {}
+        for prepared_task in prepared_tasks:
+            outputs[prepared_task["cache_key"]] = self.run_prepared_mask_task(prepared_task, processor)
+        return outputs
+
+
     def run_enhance_task(self, task, current_frame, processor):
         target_face = self.deserialize_face(task["target_face"])
         input_faceset = self.input_face_datas[task["input_index"]] if len(self.input_face_datas) > task["input_index"] else None

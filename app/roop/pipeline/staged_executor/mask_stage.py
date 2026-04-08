@@ -79,12 +79,16 @@ def process_full_mask_batch(
             result += mask * np.ascontiguousarray(original).astype(np.float32)
             output_cache[task_meta["cache_key"]] = normalize_cache_image(np.uint8(result))
     else:
+        prepared_tasks = []
+        current_frames = []
         for task_meta, original in zip(task_batch, original_batch):
             task = dict(task_meta)
-            task["aligned_frame"] = original
-            current_frame = input_cache[task_meta["cache_key"]]
-            result = mask_mgr.run_mask_task(task, current_frame, processor)
-            output_cache[task_meta["cache_key"]] = normalize_cache_image(result)
+            task["aligned_frame"] = np.ascontiguousarray(original)
+            prepared_tasks.append(task)
+            current_frames.append(np.ascontiguousarray(input_cache[task_meta["cache_key"]]))
+        masked_frames = mask_mgr.run_mask_tasks_batch(prepared_tasks, current_frames, processor, memory_plan["mask_batch_size"])
+        for task in prepared_tasks:
+            output_cache[task["cache_key"]] = normalize_cache_image(masked_frames[task["cache_key"]])
     if flush_cache:
         executor.write_stage_cache_map(output_cache_path, output_cache)
     executor.update_progress(

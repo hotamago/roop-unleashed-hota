@@ -1,21 +1,24 @@
 ﻿import roop.config.globals
 
 
-def test_resolve_model_path_for_faceswap_uses_native_batch_patch(monkeypatch):
+def test_resolve_model_path_for_faceswap_keeps_original_model(monkeypatch):
     try:
         import roop.onnx.runtime as onnx_runtime
     except ImportError as exc:
         raise AssertionError("roop.onnx.runtime helper should exist") from exc
 
+    ensure_calls = {"count": 0}
+
     monkeypatch.setattr(
         onnx_runtime,
         "ensure_native_batch_model",
-        lambda model_path: f"{model_path}.patched",
+        lambda model_path: ensure_calls.__setitem__("count", ensure_calls["count"] + 1) or f"{model_path}.patched",
     )
 
     resolved_path = onnx_runtime.resolve_model_path_for_processor("model.onnx", "faceswap")
 
-    assert resolved_path == "model.onnx.patched"
+    assert resolved_path == "model.onnx"
+    assert ensure_calls["count"] == 0
 
 
 def test_resolve_model_path_for_gfpgan_keeps_original_model(monkeypatch):

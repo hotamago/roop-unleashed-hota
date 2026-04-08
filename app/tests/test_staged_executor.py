@@ -160,6 +160,82 @@ def test_process_full_mask_batch_falls_back_when_batch_masks_are_broken(tmp_path
     assert np.array_equal(output_cache["face_b"], input_cache["face_b"])
 
 
+def test_process_full_mask_batch_uses_single_batch_worker_pool_for_non_batch_processors(tmp_path, monkeypatch):
+    executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}, "mask_clip2seg": {}}))
+    task_batch = [
+        {"cache_key": "face_a", "aligned_frame": np.full((2, 2, 3), 10, dtype=np.uint8)},
+        {"cache_key": "face_b", "aligned_frame": np.full((2, 2, 3), 20, dtype=np.uint8)},
+    ]
+    original_batch = [task["aligned_frame"] for task in task_batch]
+    input_cache = {
+        "face_a": np.full((2, 2, 3), 200, dtype=np.uint8),
+        "face_b": np.full((2, 2, 3), 210, dtype=np.uint8),
+    }
+    output_cache = {}
+
+    class FakeMaskProcessor:
+        supports_batch = False
+        supports_parallel_single_batch = True
+        batch_size_limit = 1
+
+    class FakeProcessMgr:
+        def run_mask_tasks_batch(self, task_batch, current_frames, _processor, _batch_size):
+            return {
+                task_meta["cache_key"]: normalize_cache_image(current_frame + 1)
+                for task_meta, current_frame in zip(task_batch, current_frames)
+            }
+
+    monkeypatch.setattr(executor, "update_progress", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        executor,
+        "read_stage_cache_keys",
+        lambda _path, keys: {key: input_cache[key] for key in keys},
+    )
+
+    executor.process_full_mask_batch(
+        task_batch,
+        original_batch,
+        tmp_path / "swap.bin",
+        output_cache,
+        tmp_path / "mask.bin",
+        FakeProcessMgr(),
+        FakeMaskProcessor(),
+        0,
+        2,
+        {"mask_batch_size": 8},
+        flush_cache=False,
+    )
+
+    assert np.array_equal(output_cache["face_a"], normalize_cache_image(input_cache["face_a"] + 1))
+    assert np.array_equal(output_cache["face_b"], normalize_cache_image(input_cache["face_b"] + 1))
+
+
+def test_compose_frame_from_cache_skips_fallback_reprocess_for_original_frame_mode(monkeypatch):
+    executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
+    frame = np.full((2, 2, 3), 77, dtype=np.uint8)
+
+    class FakeFallbackMgr:
+        last_swapped_frame = None
+        num_frames_no_face = 0
+        options = SimpleNamespace(max_num_reuse_frame=3)
+
+        def process_frame(self, _frame):
+            raise AssertionError("fallback processing should not run for USE_ORIGINAL_FRAME")
+
+    monkeypatch.setattr(roop.config.globals, "no_face_action", eNoFaceAction.USE_ORIGINAL_FRAME, raising=False)
+
+    result = executor.compose_frame_from_cache(
+        None,
+        frame,
+        {"tasks": [], "fallback": True},
+        {},
+        {},
+        FakeFallbackMgr(),
+    )
+
+    assert result is frame
+
+
 def test_ensure_full_compose_stage_streams_source_once_across_packs(tmp_path, monkeypatch):
     executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
     entry = ProcessEntry("clip.mp4", 0, 4, 30.0)
