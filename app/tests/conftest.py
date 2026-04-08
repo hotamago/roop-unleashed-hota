@@ -24,6 +24,8 @@ def reset_runtime_globals(monkeypatch):
         mask_batch_size=64,
         enhance_batch_size=8,
         single_batch_workers=1,
+        face_swap_model="inswapper_128",
+        subsample_upscale="256px",
     )
     monkeypatch.setattr(roop.config.globals, "CFG", cfg, raising=False)
     monkeypatch.setattr(roop.config.globals, "processing", True, raising=False)

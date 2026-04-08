@@ -1,3 +1,11 @@
+import roop.config.globals
+from roop.face_swap_models import (
+    coerce_face_swap_subsample_size,
+    get_face_swap_model_key,
+    get_face_swap_model_tile_size,
+)
+
+
 class ProcessOptions:
     def __init__(
         self,
@@ -13,6 +21,7 @@ class ProcessOptions:
         show_face_area,
         restore_original_mouth,
         show_mask=False,
+        face_swap_model=None,
     ):
         self.processors = processordefines
         self.face_distance_threshold = face_distance
@@ -24,6 +33,14 @@ class ProcessOptions:
         self.num_swap_steps = num_steps
         self.show_face_area_overlay = show_face_area
         self.show_face_masking = show_mask
-        self.subsample_size = subsample_size
+        selected_face_swap_model = face_swap_model
+        if selected_face_swap_model is None:
+            selected_face_swap_model = getattr(roop.config.globals.CFG, "face_swap_model", None)
+        self.face_swap_model = get_face_swap_model_key(selected_face_swap_model)
+        self.face_swap_tile_size = get_face_swap_model_tile_size(self.face_swap_model)
+        self.subsample_size = coerce_face_swap_subsample_size(
+            subsample_size,
+            self.face_swap_model,
+        )
         self.restore_original_mouth = restore_original_mouth
         self.max_num_reuse_frame = 15

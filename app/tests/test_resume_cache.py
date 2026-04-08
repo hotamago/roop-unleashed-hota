@@ -29,7 +29,13 @@ def test_build_resume_payload_captures_sources_targets_and_settings(monkeypatch)
     faceswap_tab.SELECTED_INPUT_FACE_INDEX = 0
     faceswap_tab.SELECTED_TARGET_FACE_INDEX = 0
 
-    payload = faceswap_tab.build_resume_payload({"output_method": "File", "detection": "Selected face"})
+    payload = faceswap_tab.build_resume_payload(
+        {
+            "output_method": "File",
+            "detection": "Selected face",
+            "face_swap_model": "hyperswap_1a_256",
+        }
+    )
 
     assert payload["sources"][0]["type"] == "image_face"
     assert payload["sources"][0]["mask_offsets"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
@@ -37,6 +43,7 @@ def test_build_resume_payload_captures_sources_targets_and_settings(monkeypatch)
     assert payload["targets"]["selected_faces"][0]["frame_number"] == 12
     assert np.allclose(payload["targets"]["selected_faces"][0]["face_embedding"], [0.1, 0.2, 0.3])
     assert payload["settings"]["output_method"] == "File"
+    assert payload["settings"]["face_swap_model"] == "hyperswap_1a_256"
 
 
 def test_write_and_read_resume_payload_roundtrip(tmp_path, monkeypatch):

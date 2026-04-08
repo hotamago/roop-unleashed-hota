@@ -2,7 +2,10 @@ from types import SimpleNamespace
 
 import roop.config.globals
 from roop.config.settings import Settings
+from roop.face_swap_models import get_face_swap_upscale_choices, parse_face_swap_upscale_size
 from roop.memory.planner import describe_memory_plan, resolve_memory_plan, resolve_single_batch_workers
+from roop.pipeline.options import ProcessOptions
+from roop.pipeline.staged_executor.cache import get_staged_cache_options_snapshot
 
 
 def test_settings_loads_and_persists_manual_stage_tuning(tmp_path):
@@ -18,6 +21,8 @@ def test_settings_loads_and_persists_manual_stage_tuning(tmp_path):
     assert cfg.mask_batch_size == 64
     assert cfg.enhance_batch_size == 8
     assert cfg.single_batch_workers == 1
+    assert cfg.face_swap_model == "inswapper_128"
+    assert cfg.subsample_upscale == "256px"
 
     cfg.detect_pack_frame_count = 512
     cfg.staged_chunk_size = 128
@@ -26,6 +31,8 @@ def test_settings_loads_and_persists_manual_stage_tuning(tmp_path):
     cfg.mask_batch_size = 96
     cfg.enhance_batch_size = 12
     cfg.single_batch_workers = 3
+    cfg.face_swap_model = "hyperswap_1a_256"
+    cfg.subsample_upscale = "512px"
     cfg.save()
 
     reloaded = Settings(str(config_path))
@@ -36,6 +43,35 @@ def test_settings_loads_and_persists_manual_stage_tuning(tmp_path):
     assert reloaded.mask_batch_size == 96
     assert reloaded.enhance_batch_size == 12
     assert reloaded.single_batch_workers == 3
+    assert reloaded.face_swap_model == "hyperswap_1a_256"
+    assert reloaded.subsample_upscale == "512px"
+
+
+def test_settings_normalizes_subsample_for_256_face_swap_models(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "face_swap_model: hyperswap_1b_256\nsubsample_upscale: 128px\n",
+        encoding="utf-8",
+    )
+
+    cfg = Settings(str(config_path))
+
+    assert cfg.face_swap_model == "hyperswap_1b_256"
+    assert cfg.subsample_upscale == "256px"
+
+
+def test_settings_rounds_hyperswap_upscale_to_supported_choice(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "face_swap_model: hyperswap_1c_256\nsubsample_upscale: 384px\n",
+        encoding="utf-8",
+    )
+
+    cfg = Settings(str(config_path))
+
+    assert cfg.face_swap_model == "hyperswap_1c_256"
+    assert cfg.subsample_upscale == "512px"
+    assert get_face_swap_upscale_choices(cfg.face_swap_model) == ["256px", "512px", "768px", "1024px"]
 
 
 def test_resolve_memory_plan_uses_manual_stage_tuning(monkeypatch):
@@ -104,3 +140,66 @@ def test_resolve_single_batch_workers_keeps_cpu_parallelism(monkeypatch):
     assert effective_workers == 4
     assert requested_workers == 4
     assert reason is None
+
+
+def test_process_options_coerce_subsample_size_for_256_face_swap_models():
+    options = ProcessOptions(
+        {"faceswap": {}},
+        0.6,
+        0.5,
+        "all",
+        0,
+        "",
+        None,
+        1,
+        128,
+        False,
+        False,
+        face_swap_model="hyperswap_1a_256",
+    )
+
+    assert options.face_swap_model == "hyperswap_1a_256"
+    assert options.face_swap_tile_size == 256
+    assert options.subsample_size == 256
+
+
+def test_process_options_rounds_to_supported_hyperswap_subsample_size():
+    options = ProcessOptions(
+        {"faceswap": {}},
+        0.6,
+        0.5,
+        "all",
+        0,
+        "",
+        None,
+        1,
+        384,
+        False,
+        False,
+        face_swap_model="hyperswap_1a_256",
+    )
+
+    assert options.subsample_size == 512
+
+
+def test_parse_face_swap_upscale_size_keeps_four_digit_values():
+    assert parse_face_swap_upscale_size("1024px", "hyperswap_1a_256") == 1024
+
+
+def test_staged_cache_snapshot_changes_when_face_swap_model_changes():
+    base = {
+        "processors": {"faceswap": {}},
+        "face_distance_threshold": 0.6,
+        "blend_ratio": 0.5,
+        "swap_mode": "all",
+        "selected_index": 0,
+        "masking_text": "",
+        "num_swap_steps": 1,
+        "subsample_size": 256,
+        "restore_original_mouth": False,
+        "show_face_masking": False,
+    }
+    options_a = SimpleNamespace(face_swap_model="inswapper_128", **base)
+    options_b = SimpleNamespace(face_swap_model="hyperswap_1b_256", **base)
+
+    assert get_staged_cache_options_snapshot(options_a) != get_staged_cache_options_snapshot(options_b)

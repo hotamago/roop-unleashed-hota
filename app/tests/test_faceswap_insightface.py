@@ -50,8 +50,31 @@ class FakeDynamicSession(FakeSession):
         ]
 
 
+class FakeDynamic256Session(FakeSession):
+    def get_inputs(self):
+        return [
+            FakeInputMeta(["batch", 3, 256, 256], name="target"),
+            FakeInputMeta(["batch", 512], name="source"),
+        ]
+
+
+class FakeReversedDynamic256Session(FakeSession):
+    def get_inputs(self):
+        return [
+            FakeInputMeta([1, 512], name="source"),
+            FakeInputMeta([1, 3, 256, 256], name="target"),
+        ]
+
+    def get_outputs(self):
+        return [FakeOutputMeta(name="output"), FakeOutputMeta(name="mask")]
+
+
 def make_source_face():
-    return SimpleNamespace(normed_embedding=np.ones((512,), dtype=np.float32))
+    embedding = np.ones((512,), dtype=np.float32)
+    return SimpleNamespace(
+        embedding=embedding.copy(),
+        normed_embedding=embedding.copy(),
+    )
 
 
 def test_faceswap_insightface_detects_single_batch_model():
@@ -91,7 +114,7 @@ def test_faceswap_insightface_initialize_uses_native_batch_model(monkeypatch):
         initializer=[onnx.numpy_helper.from_array(np.eye(512, dtype=np.float32), name="emap")]
     )
 
-    monkeypatch.setattr("roop.processors.FaceSwapInsightFace.resolve_relative_path", lambda _path: "original.onnx")
+    monkeypatch.setattr("roop.processors.FaceSwapInsightFace.ensure_face_swap_model_downloaded", lambda _model: "original.onnx")
     monkeypatch.setattr("roop.processors.FaceSwapInsightFace.onnx.load", lambda _path: SimpleNamespace(graph=fake_graph))
 
     try:
@@ -114,3 +137,65 @@ def test_faceswap_insightface_initialize_uses_native_batch_model(monkeypatch):
     assert captured["model_path"] == "patched.onnx"
     assert processor.batch_size_limit is None
     assert processor.supports_batch is True
+    assert processor.model_input_size == 128
+
+
+def test_faceswap_insightface_initialize_uses_selected_face_swap_model(monkeypatch):
+    captured = {}
+    fake_graph = SimpleNamespace(
+        initializer=[onnx.numpy_helper.from_array(np.eye(512, dtype=np.float32), name="emap")]
+    )
+
+    monkeypatch.setattr("roop.processors.FaceSwapInsightFace.ensure_face_swap_model_downloaded", lambda model: f"{model}.onnx")
+    monkeypatch.setattr("roop.processors.FaceSwapInsightFace.onnx.load", lambda _path: SimpleNamespace(graph=fake_graph))
+    monkeypatch.setattr(
+        "roop.processors.FaceSwapInsightFace.resolve_model_path_for_processor",
+        lambda model_path, _processor_name: f"{model_path}.patched",
+    )
+
+    def fake_inference_session(model_path, *_args, **_kwargs):
+        captured["model_path"] = model_path
+        return FakeDynamic256Session()
+
+    monkeypatch.setattr("roop.processors.FaceSwapInsightFace.create_inference_session", fake_inference_session)
+
+    processor = FaceSwapInsightFace()
+    processor.Initialize({"devicename": "cuda", "face_swap_model": "hyperswap_1c_256"})
+
+    assert captured["model_path"] == "hyperswap_1c_256.onnx.patched"
+    assert processor.active_model_key == "hyperswap_1c_256"
+    assert processor.model_input_size == 256
+
+
+def test_faceswap_insightface_initialize_skips_projection_for_hyperswap_style_models(monkeypatch):
+    captured = {}
+    fake_graph = SimpleNamespace(
+        initializer=[
+            onnx.numpy_helper.from_array(np.ones((64,), dtype=np.float32), name="not_an_emap")
+        ]
+    )
+
+    monkeypatch.setattr("roop.processors.FaceSwapInsightFace.ensure_face_swap_model_downloaded", lambda model: f"{model}.onnx")
+    monkeypatch.setattr("roop.processors.FaceSwapInsightFace.onnx.load", lambda _path: SimpleNamespace(graph=fake_graph))
+    monkeypatch.setattr(
+        "roop.processors.FaceSwapInsightFace.resolve_model_path_for_processor",
+        lambda model_path, _processor_name: model_path,
+    )
+
+    def fake_inference_session(model_path, *_args, **_kwargs):
+        captured["model_path"] = model_path
+        return FakeReversedDynamic256Session()
+
+    monkeypatch.setattr("roop.processors.FaceSwapInsightFace.create_inference_session", fake_inference_session)
+
+    processor = FaceSwapInsightFace()
+    processor.Initialize({"devicename": "cuda", "face_swap_model": "hyperswap_1a_256"})
+
+    latent = processor._project_source_latent(make_source_face())
+
+    assert captured["model_path"] == "hyperswap_1a_256.onnx"
+    assert processor.emap is None
+    assert processor.source_input_name == "source"
+    assert processor.target_input_name == "target"
+    assert processor.output_name == "output"
+    assert latent.shape == (1, 512)

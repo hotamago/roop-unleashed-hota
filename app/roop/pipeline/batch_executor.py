@@ -9,6 +9,11 @@ from roop.pipeline.options import ProcessOptions
 from roop.face import align_crop, get_first_face, get_all_faces, rotate_anticlockwise, rotate_clockwise, clamp_cut_values
 from roop.utils import compute_cosine_distance, get_device, str_to_class
 from roop.memory import resolve_single_batch_workers
+from roop.face_swap_models import (
+    get_face_swap_model_mean,
+    get_face_swap_model_standard_deviation,
+    get_face_swap_model_type,
+)
 import roop.utils.vr as vr
 
 from typing import Any, List, Callable
@@ -328,6 +333,33 @@ class ProcessMgr():
         return {"tasks": tasks, "fallback": fallback_required}
 
 
+    def get_swap_model_output_size(self, processor=None):
+        model_output_size = getattr(processor, "model_input_size", None)
+        if isinstance(model_output_size, int) and model_output_size > 0:
+            return model_output_size
+        model_output_size = getattr(self.options, "face_swap_tile_size", None)
+        if isinstance(model_output_size, int) and model_output_size > 0:
+            return model_output_size
+        return 128
+
+
+    def get_swap_model_type(self, processor=None):
+        model_key = getattr(self.options, "face_swap_model", None)
+        if processor is not None:
+            model_key = getattr(processor, "active_model_key", model_key)
+        return get_face_swap_model_type(model_key)
+
+
+    def get_swap_model_normalization(self, processor=None):
+        model_key = getattr(self.options, "face_swap_model", None)
+        if processor is not None:
+            model_key = getattr(processor, "active_model_key", model_key)
+        return (
+            np.asarray(get_face_swap_model_mean(model_key), dtype=np.float32),
+            np.asarray(get_face_swap_model_standard_deviation(model_key), dtype=np.float32),
+        )
+
+
     def rebuild_aligned_frame(self, frame: Frame, task):
         target_face = self.deserialize_face(task["target_face"])
         working_frame = frame
@@ -348,19 +380,19 @@ class ProcessMgr():
     def run_swap_task(self, task, processor, batch_size: int = 1):
         inputface = self.input_face_datas[task["input_index"]].faces[0] if len(self.input_face_datas) > task["input_index"] else None
         target_face = self.deserialize_face(task["target_face"])
-        model_output_size = 128
-        subsample_total = self.options.subsample_size // model_output_size
+        model_output_size = self.get_swap_model_output_size(processor)
+        subsample_total = max(self.options.subsample_size // model_output_size, 1)
         current_frames = list(self.implode_pixel_boost(task["aligned_frame"], model_output_size, subsample_total))
         for _ in range(0, self.options.num_swap_steps):
-            prepared_frames = [self.prepare_crop_frame(frame) for frame in current_frames]
+            prepared_frames = [self.prepare_crop_frame(frame, processor) for frame in current_frames]
             if getattr(processor, "supports_batch", False):
                 raw_outputs = processor.RunBatch([inputface] * len(prepared_frames), [target_face] * len(prepared_frames), prepared_frames, max(1, batch_size))
-                current_frames = [self.normalize_swap_frame(output) for output in raw_outputs]
+                current_frames = [self.normalize_swap_frame(output, processor) for output in raw_outputs]
             else:
                 next_frames = []
                 for prepared_frame in prepared_frames:
                     output = processor.Run(inputface, target_face, prepared_frame)
-                    next_frames.append(self.normalize_swap_frame(output))
+                    next_frames.append(self.normalize_swap_frame(output, processor))
                 current_frames = next_frames
         fake_frame = self.explode_pixel_boost(current_frames, model_output_size, subsample_total, self.options.subsample_size)
         return fake_frame.astype(np.uint8)
@@ -368,7 +400,7 @@ class ProcessMgr():
 
     def run_swap_single_outputs(self, processor, source_faces, target_faces, prepared_frames):
         return [
-            self.normalize_swap_frame(processor.Run(source_face, target_face, prepared_frame))
+            self.normalize_swap_frame(processor.Run(source_face, target_face, prepared_frame), processor)
             for source_face, target_face, prepared_frame in zip(source_faces, target_faces, prepared_frames)
         ]
 
@@ -384,7 +416,7 @@ class ProcessMgr():
     def run_swap_tasks_batch(self, tasks, processor, batch_size: int = 1):
         if not tasks:
             return {}
-        model_output_size = 128
+        model_output_size = self.get_swap_model_output_size(processor)
         subsample_total = max(self.options.subsample_size // model_output_size, 1)
         prepared_tasks = []
         for task in tasks:
@@ -408,7 +440,7 @@ class ProcessMgr():
             frame_map = []
             for task_index, prepared_task in enumerate(prepared_tasks):
                 for slice_index, current_frame in enumerate(prepared_task["current_frames"]):
-                    prepared_frames.append(self.prepare_crop_frame(current_frame))
+                    prepared_frames.append(self.prepare_crop_frame(current_frame, processor))
                     source_faces.append(prepared_task["input_face"])
                     target_faces.append(prepared_task["target_face"])
                     frame_map.append((task_index, slice_index))
@@ -419,7 +451,7 @@ class ProcessMgr():
                     self.disable_broken_swap_batch(processor)
                     normalized_outputs = self.run_swap_single_outputs(processor, source_faces, target_faces, prepared_frames)
                 else:
-                    normalized_outputs = [self.normalize_swap_frame(output) for output in raw_outputs]
+                    normalized_outputs = [self.normalize_swap_frame(output, processor) for output in raw_outputs]
                     normalized_outputs = self.validate_swap_batch_outputs(
                         processor,
                         source_faces,
@@ -448,7 +480,7 @@ class ProcessMgr():
         if getattr(processor, "_batch_output_validation_state", None) == "broken":
             return self.run_swap_single_outputs(processor, source_faces, target_faces, prepared_frames)
 
-        reference_output = self.normalize_swap_frame(processor.Run(source_faces[0], target_faces[0], prepared_frames[0]))
+        reference_output = self.normalize_swap_frame(processor.Run(source_faces[0], target_faces[0], prepared_frames[0]), processor)
         batch_output = normalized_outputs[0]
         if np.allclose(batch_output.astype(np.float32), reference_output.astype(np.float32), atol=1.0):
             processor._batch_output_validation_state = "verified"
@@ -458,7 +490,7 @@ class ProcessMgr():
         return [
             reference_output,
             *[
-                self.normalize_swap_frame(processor.Run(source_face, target_face, prepared_frame))
+                self.normalize_swap_frame(processor.Run(source_face, target_face, prepared_frame), processor)
                 for source_face, target_face, prepared_frame in zip(source_faces[1:], target_faces[1:], prepared_frames[1:])
             ],
         ]
@@ -573,11 +605,11 @@ class ProcessMgr():
         for _ in range(0, self.options.num_swap_steps):
             next_frames = []
             for current_frame in current_frames:
-                prepared_frame = self.prepare_crop_frame(current_frame)
+                prepared_frame = self.prepare_crop_frame(current_frame, processor)
                 output = processor.Run(prepared_task["input_face"], prepared_task["target_face"], prepared_frame)
-                next_frames.append(self.normalize_swap_frame(output))
+                next_frames.append(self.normalize_swap_frame(output, processor))
             current_frames = next_frames
-        model_output_size = 128
+        model_output_size = self.get_swap_model_output_size(processor)
         subsample_total = max(self.options.subsample_size // model_output_size, 1)
         fake_frame = self.explode_pixel_boost(current_frames, model_output_size, subsample_total, self.options.subsample_size)
         return fake_frame.astype(np.uint8)
@@ -1067,9 +1099,10 @@ class ProcessMgr():
                     frame = rotcutframe
                     target_face = rotface
 
-        model_output_size = 128
+        swap_processor = next((processor for processor in self.processors if processor.type == 'swap'), None)
+        model_output_size = self.get_swap_model_output_size(swap_processor)
         subsample_size = self.options.subsample_size
-        subsample_total = subsample_size // model_output_size
+        subsample_total = max(subsample_size // model_output_size, 1)
         aligned_img, M = align_crop(frame, target_face.kps, subsample_size)
 
         fake_frame = aligned_img
@@ -1081,9 +1114,9 @@ class ProcessMgr():
                 subsample_frames = self.implode_pixel_boost(aligned_img, model_output_size, subsample_total)
                 for sliced_frame in subsample_frames:
                     for _ in range(0, self.options.num_swap_steps):
-                        sliced_frame = self.prepare_crop_frame(sliced_frame)
+                        sliced_frame = self.prepare_crop_frame(sliced_frame, p)
                         sliced_frame = p.Run(inputface, target_face, sliced_frame)
-                        sliced_frame = self.normalize_swap_frame(sliced_frame)
+                        sliced_frame = self.normalize_swap_frame(sliced_frame, p)
                     swap_result_frames.append(sliced_frame)
                 fake_frame = self.explode_pixel_boost(swap_result_frames, model_output_size, subsample_total, subsample_size)
                 fake_frame = fake_frame.astype(np.uint8)
@@ -1270,29 +1303,23 @@ class ProcessMgr():
         return mask
 
 
-    def prepare_crop_frame(self, swap_frame):
-        model_type = 'inswapper'
-        model_mean = [0.0, 0.0, 0.0]
-        model_standard_deviation = [1.0, 1.0, 1.0]
-
-        if model_type == 'ghost':
-            swap_frame = swap_frame[:, :, ::-1] / 127.5 - 1
-        else:
-            swap_frame = swap_frame[:, :, ::-1] / 255.0
+    def prepare_crop_frame(self, swap_frame, processor=None):
+        model_mean, model_standard_deviation = self.get_swap_model_normalization(processor)
+        swap_frame = swap_frame[:, :, ::-1] / 255.0
         swap_frame = (swap_frame - model_mean) / model_standard_deviation
         swap_frame = swap_frame.transpose(2, 0, 1)
         swap_frame = np.expand_dims(swap_frame, axis=0).astype(np.float32)
         return swap_frame
 
 
-    def normalize_swap_frame(self, swap_frame):
-        model_type = 'inswapper'
+    def normalize_swap_frame(self, swap_frame, processor=None):
+        model_type = self.get_swap_model_type(processor)
+        model_mean, model_standard_deviation = self.get_swap_model_normalization(processor)
         swap_frame = swap_frame.transpose(1, 2, 0)
-        if model_type == 'ghost':
-            swap_frame = (swap_frame * 127.5 + 127.5).round()
-        else:
-            swap_frame = (swap_frame * 255.0).round()
-        swap_frame = swap_frame[:, :, ::-1]
+        if model_type != 'inswapper':
+            swap_frame = swap_frame * model_standard_deviation + model_mean
+        swap_frame = np.clip(swap_frame, 0, 1)
+        swap_frame = (swap_frame[:, :, ::-1] * 255.0).round()
         return swap_frame
 
     def implode_pixel_boost(self, aligned_face_frame, model_size, pixel_boost_total:int):

@@ -1,5 +1,11 @@
 import yaml
 
+from roop.face_swap_models import (
+    DEFAULT_FACE_SWAP_MODEL,
+    get_face_swap_model_key,
+    normalize_face_swap_upscale,
+)
+
 
 class Settings:
     def __init__(self, config_file):
@@ -60,7 +66,13 @@ class Settings:
         self.face_detection_mode = self.default_get(data, "face_detection_mode", "All faces")
         self.num_swap_steps = self.default_get(data, "num_swap_steps", 1)
         self.selected_enhancer = self.default_get(data, "selected_enhancer", "GPEN")
-        self.subsample_upscale = self.default_get(data, "subsample_upscale", "256px")
+        self.face_swap_model = get_face_swap_model_key(
+            self.default_get(data, "face_swap_model", DEFAULT_FACE_SWAP_MODEL)
+        )
+        self.subsample_upscale = normalize_face_swap_upscale(
+            self.default_get(data, "subsample_upscale", "256px"),
+            self.face_swap_model,
+        )
         self.blend_ratio = self.default_get(data, "blend_ratio", 0.80)
         legacy_video_swapping_method = self.default_get(data, "video_swapping_method", "Smart staged processing")
         if legacy_video_swapping_method == "In-Memory processing":
@@ -119,6 +131,7 @@ class Settings:
             "face_detection_mode": self.face_detection_mode,
             "num_swap_steps": self.num_swap_steps,
             "selected_enhancer": self.selected_enhancer,
+            "face_swap_model": self.face_swap_model,
             "subsample_upscale": self.subsample_upscale,
             "blend_ratio": self.blend_ratio,
             "video_swapping_method": self.video_swapping_method,

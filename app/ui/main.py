@@ -6,6 +6,13 @@ import gradio as gr
 import roop.config.globals
 import roop.config as roop_config
 import roop.utils as util
+from roop.face_swap_models import (
+    get_face_swap_model_key,
+    get_face_swap_upscale_choices,
+    get_face_swap_upscale_hint,
+    normalize_face_swap_upscale,
+    parse_face_swap_upscale_size,
+)
 from roop.utils.cache_paths import get_gradio_temp_root
 import ui.globals as uii
 import ui.globals
@@ -502,7 +509,7 @@ def show_msg(msg: str):
 
 
 _SESSION_CFG_KEYS = [
-    'face_detection_mode', 'num_swap_steps', 'selected_enhancer', 'max_face_distance',
+    'face_detection_mode', 'num_swap_steps', 'selected_enhancer', 'face_swap_model', 'max_face_distance',
     'subsample_upscale', 'blend_ratio', 'video_swapping_method', 'no_face_action',
     'vr_mode', 'autorotate_faces', 'skip_audio', 'keep_frames', 'wait_after_extraction',
     'output_method', 'mask_engine', 'mask_clip_text', 'show_mask_offsets',
@@ -516,6 +523,7 @@ def _session_components():
         ui.globals.ui_selected_face_detection,
         ui.globals.ui_num_swap_steps,
         ui.globals.ui_selected_enhancer,
+        ui.globals.ui_face_swap_model,
         ui.globals.ui_max_face_distance,
         ui.globals.ui_upscale,
         ui.globals.ui_blend_ratio,
@@ -544,6 +552,9 @@ def save_session(*values):
     cfg = roop.config.globals.CFG
     for key, val in zip(_SESSION_CFG_KEYS, values):
         setattr(cfg, key, val)
+    cfg.face_swap_model = get_face_swap_model_key(getattr(cfg, "face_swap_model", None))
+    cfg.subsample_upscale = normalize_face_swap_upscale(cfg.subsample_upscale, cfg.face_swap_model)
+    roop.config.globals.subsample_size = parse_face_swap_upscale_size(cfg.subsample_upscale, cfg.face_swap_model)
     cfg.save()
     gr.Info('Settings saved!')
 
@@ -551,6 +562,23 @@ def save_session(*values):
 def load_session():
     roop.config.globals.CFG.load()
     cfg = roop.config.globals.CFG
-    return tuple(getattr(cfg, key) for key in _SESSION_CFG_KEYS)
+    cfg.face_swap_model = get_face_swap_model_key(getattr(cfg, "face_swap_model", None))
+    cfg.subsample_upscale = normalize_face_swap_upscale(cfg.subsample_upscale, cfg.face_swap_model)
+    roop.config.globals.subsample_size = parse_face_swap_upscale_size(cfg.subsample_upscale, cfg.face_swap_model)
+
+    loaded_values = []
+    for key in _SESSION_CFG_KEYS:
+        if key == 'subsample_upscale':
+            loaded_values.append(
+                gr.Dropdown(
+                    choices=get_face_swap_upscale_choices(cfg.face_swap_model),
+                    value=cfg.subsample_upscale,
+                    info=get_face_swap_upscale_hint(cfg.face_swap_model),
+                    interactive=True,
+                )
+            )
+            continue
+        loaded_values.append(getattr(cfg, key))
+    return tuple(loaded_values)
 
 

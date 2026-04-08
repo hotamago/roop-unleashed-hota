@@ -5,6 +5,7 @@ ui_SELECTED_INPUT_FACE_INDEX = 0
 
 # Already-global components (cross-tab shared)
 ui_selected_enhancer = None
+ui_face_swap_model = None
 ui_upscale = None
 ui_blend_ratio = None
 ui_input_thumbs = []

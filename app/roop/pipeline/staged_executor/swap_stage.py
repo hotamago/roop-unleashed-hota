@@ -8,7 +8,8 @@ from .cache import normalize_cache_image, write_json
 
 
 def get_swap_task_batch_size(executor, memory_plan):
-    tiles_per_task = max((max(executor.options.subsample_size, 128) // 128) ** 2, 1)
+    tile_size = max(getattr(executor.options, "face_swap_tile_size", 128), 1)
+    tiles_per_task = max((max(executor.options.subsample_size, tile_size) // tile_size) ** 2, 1)
     native_batch_window = max(1, min(64, (max(memory_plan["swap_batch_size"], 1) * 2) // tiles_per_task))
     worker_window = max(memory_plan.get("single_batch_workers", 1), 1) * 2
     return max(native_batch_window, min(64, worker_window))

@@ -3,7 +3,15 @@ import os
 import gradio as gr
 import roop.config.globals
 import ui.globals
-import json
+from roop.face_swap_models import (
+    get_face_swap_model_choices,
+    get_face_swap_model_hint,
+    get_face_swap_model_key,
+    get_face_swap_upscale_choices,
+    get_face_swap_upscale_hint,
+    normalize_face_swap_upscale,
+    parse_face_swap_upscale_size,
+)
 from roop.utils.cache_paths import get_jobs_root
 from roop.memory.planner import describe_memory_plan, resolve_memory_plan
 
@@ -14,6 +22,35 @@ providerlist = None
 CONFIG_SAVE_DIR = "saved_configs"
 
 settings_controls = []
+
+
+def build_face_swap_upscale_update(model_name=None, selected_upscale=None):
+    current_model = get_face_swap_model_key(
+        model_name or getattr(roop.config.globals.CFG, "face_swap_model", None)
+    )
+    normalized_upscale = normalize_face_swap_upscale(
+        selected_upscale if selected_upscale is not None else getattr(roop.config.globals.CFG, "subsample_upscale", "256px"),
+        current_model,
+    )
+    return gr.Dropdown(
+        choices=get_face_swap_upscale_choices(current_model),
+        value=normalized_upscale,
+        info=get_face_swap_upscale_hint(current_model),
+        interactive=True,
+    )
+
+
+def on_face_swap_model_changed(selected_model, current_upscale):
+    model_key = get_face_swap_model_key(selected_model)
+    normalized_upscale = normalize_face_swap_upscale(current_upscale, model_key)
+    roop.config.globals.CFG.face_swap_model = model_key
+    roop.config.globals.CFG.subsample_upscale = normalized_upscale
+    roop.config.globals.subsample_size = parse_face_swap_upscale_size(normalized_upscale, model_key)
+    return (
+        update_memory_status(),
+        build_face_swap_upscale_update(model_key, normalized_upscale),
+        gr.Markdown(value=get_face_swap_model_hint(model_key)),
+    )
 
 def settings_tab():
     from roop.core.providers import suggest_execution_providers
@@ -43,6 +80,17 @@ def settings_tab():
                 settings_controls.append(gr.Dropdown(providerlist, label="Provider", value=roop.config.globals.CFG.provider, elem_id='provider', interactive=True))
                 chk_det_size = gr.Checkbox(label="Use default Det-Size", value=True, elem_id='default_det_size', interactive=True)
                 settings_controls.append(gr.Checkbox(label="Force CPU for Face Analyser", value=roop.config.globals.CFG.force_cpu, elem_id='force_cpu', interactive=True))
+                ui.globals.ui_face_swap_model = gr.Dropdown(
+                    get_face_swap_model_choices(),
+                    label="Face Swap Model",
+                    info="Pick the ONNX model used for swapping. Models download on first use.",
+                    value=get_face_swap_model_key(getattr(roop.config.globals.CFG, "face_swap_model", None)),
+                    elem_id='face_swap_model',
+                    interactive=True,
+                )
+                face_swap_model_hint = gr.Markdown(
+                    get_face_swap_model_hint(getattr(roop.config.globals.CFG, "face_swap_model", None))
+                )
                 max_threads = gr.Slider(1, 32, value=roop.config.globals.CFG.max_threads, label="Max. Number of Threads", info='default: 3', step=1.0, interactive=True)
             with gr.Column():
                 staged_chunk_size = gr.Slider(8, 480, value=roop.config.globals.CFG.staged_chunk_size, label="Staged Chunk Size", info='Frames scheduled per staged chunk', step=1.0, interactive=True)
@@ -73,6 +121,12 @@ def settings_tab():
     # Settings
     for s in settings_controls:
         s.select(fn=on_settings_changed, outputs=[memory_status])
+    ui.globals.ui_face_swap_model.change(
+        fn=on_face_swap_model_changed,
+        inputs=[ui.globals.ui_face_swap_model, ui.globals.ui_upscale],
+        outputs=[memory_status, ui.globals.ui_upscale, face_swap_model_hint],
+        show_progress='hidden',
+    )
     max_threads.input(fn=lambda a,b='max_threads':on_settings_changed_misc(a,b), inputs=[max_threads], outputs=[memory_status])
     staged_chunk_size.input(fn=lambda a,b='staged_chunk_size':on_settings_changed_misc(a,b), inputs=[staged_chunk_size], outputs=[memory_status])
     prefetch_frames.input(fn=lambda a,b='prefetch_frames':on_settings_changed_misc(a,b), inputs=[prefetch_frames], outputs=[memory_status])

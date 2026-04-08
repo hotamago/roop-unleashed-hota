@@ -9,6 +9,13 @@ import numpy as np
 import roop.utils as util
 import roop.config.globals
 import ui.globals
+from roop.face_swap_models import (
+    get_face_swap_model_key,
+    get_face_swap_upscale_choices,
+    get_face_swap_upscale_hint,
+    normalize_face_swap_upscale,
+    parse_face_swap_upscale_size,
+)
 from roop.utils.cache_paths import get_gradio_temp_root
 from roop.face import extract_face_images, create_blank_image
 from roop.media.capturer import get_video_frame, get_video_frame_total, get_image_frame
@@ -18,6 +25,30 @@ from roop.pipeline.faceset import FaceSet
 from roop.progress.status import get_processing_status_markdown, set_memory_status, set_processing_message, start_processing_status
 
 last_image = None
+
+
+def build_upscale_dropdown_update(model_name=None, selected_upscale=None):
+    current_model = get_face_swap_model_key(
+        model_name or getattr(roop.config.globals.CFG, "face_swap_model", None)
+    )
+    normalized_upscale = normalize_face_swap_upscale(
+        selected_upscale if selected_upscale is not None else getattr(roop.config.globals.CFG, "subsample_upscale", "256px"),
+        current_model,
+    )
+    return gr.Dropdown(
+        choices=get_face_swap_upscale_choices(current_model),
+        value=normalized_upscale,
+        info=get_face_swap_upscale_hint(current_model),
+        interactive=True,
+    )
+
+
+def normalize_upscale_for_current_model(selected_upscale):
+    current_model = get_face_swap_model_key(getattr(roop.config.globals.CFG, "face_swap_model", None))
+    normalized_upscale = normalize_face_swap_upscale(selected_upscale, current_model)
+    roop.config.globals.CFG.subsample_upscale = normalized_upscale
+    roop.config.globals.subsample_size = parse_face_swap_upscale_size(normalized_upscale, current_model)
+    return build_upscale_dropdown_update(current_model, normalized_upscale)
 
 
 def sync_resume_processing_cache_id(resume_path) -> None:
@@ -585,9 +616,13 @@ def write_resume_payload(payload):
 
 def get_resume_settings_from_payload(payload):
     settings = dict(payload.get("settings") or {})
+    face_swap_model = get_face_swap_model_key(
+        settings.get("face_swap_model", getattr(roop.config.globals.CFG, "face_swap_model", None))
+    )
     return {
         "output_method": settings.get("output_method", roop.config.globals.CFG.output_method),
         "enhancer": settings.get("enhancer", roop.config.globals.CFG.selected_enhancer),
+        "face_swap_model": face_swap_model,
         "detection": settings.get("detection", roop.config.globals.CFG.face_detection_mode),
         "keep_frames": bool(settings.get("keep_frames", roop.config.globals.CFG.keep_frames)),
         "wait_after_extraction": bool(settings.get("wait_after_extraction", roop.config.globals.CFG.wait_after_extraction)),
@@ -602,7 +637,10 @@ def get_resume_settings_from_payload(payload):
         "autorotate": bool(settings.get("autorotate", roop.config.globals.CFG.autorotate_faces)),
         "restore_original_mouth": bool(settings.get("restore_original_mouth", roop.config.globals.CFG.restore_original_mouth)),
         "num_swap_steps": int(settings.get("num_swap_steps", roop.config.globals.CFG.num_swap_steps)),
-        "upsample": settings.get("upsample", roop.config.globals.CFG.subsample_upscale),
+        "upsample": normalize_face_swap_upscale(
+            settings.get("upsample", roop.config.globals.CFG.subsample_upscale),
+            face_swap_model,
+        ),
     }
 
 
@@ -827,6 +865,12 @@ def load_resume_into_runtime(resume_path):
     restore_target_faces_from_resume((payload.get("targets") or {}).get("selected_faces") or [])
 
     settings = get_resume_settings_from_payload(payload)
+    roop.config.globals.CFG.face_swap_model = settings["face_swap_model"]
+    roop.config.globals.CFG.subsample_upscale = settings["upsample"]
+    roop.config.globals.subsample_size = parse_face_swap_upscale_size(
+        settings["upsample"],
+        settings["face_swap_model"],
+    )
     selected_preview_index = int((payload.get("targets") or {}).get("selected_preview_index", 0) or 0)
     selected_preview_index = max(0, min(selected_preview_index, len(target_paths) - 1))
     SELECTED_INPUT_FACE_INDEX = int((payload.get("selection") or {}).get("input_face_index", 0) or 0)
@@ -1084,7 +1128,16 @@ def faceswap_tab():
             with gr.Column(scale=1):
                 max_face_distance = gr.Slider(0.01, 1.0, value=roop.config.globals.CFG.max_face_distance, label="Max Face Similarity Threshold", info="0.0 = identical 1.0 = no similarity", elem_id='max_face_distance', interactive=True)
             with gr.Column(scale=1):
-                ui.globals.ui_upscale = gr.Dropdown(["128px", "256px", "512px"], value=roop.config.globals.CFG.subsample_upscale, label="Subsample upscale to", interactive=True)
+                ui.globals.ui_upscale = gr.Dropdown(
+                    get_face_swap_upscale_choices(getattr(roop.config.globals.CFG, "face_swap_model", None)),
+                    value=normalize_face_swap_upscale(
+                        roop.config.globals.CFG.subsample_upscale,
+                        getattr(roop.config.globals.CFG, "face_swap_model", None),
+                    ),
+                    label="Subsample upscale to",
+                    info=get_face_swap_upscale_hint(getattr(roop.config.globals.CFG, "face_swap_model", None)),
+                    interactive=True,
+                )
             with gr.Column(scale=2):
                 ui.globals.ui_blend_ratio = gr.Slider(0.0, 1.0, value=roop.config.globals.CFG.blend_ratio, label="Original/Enhanced image blend ratio", info="Only used with active post-processing")
 
@@ -1205,6 +1258,12 @@ def faceswap_tab():
     bt_refresh_preview.click(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)            
     bt_toggle_masking.click(fn=on_toggle_masking, inputs=[previewimage, maskimage], outputs=[previewimage, maskimage])            
     fake_preview.change(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs)
+    ui.globals.ui_upscale.change(
+        fn=normalize_upscale_for_current_model,
+        inputs=[ui.globals.ui_upscale],
+        outputs=[ui.globals.ui_upscale],
+        show_progress='hidden',
+    ).success(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden')
     preview_frame_num.release(fn=on_preview_frame_changed, inputs=previewinputs, outputs=previewoutputs, show_progress='hidden', )
     bt_use_face_from_preview.click(fn=on_use_face_from_selected, show_progress='full', inputs=[bt_destfiles, preview_frame_num], outputs=[target_faces, selected_face_detection])
     set_frame_start.click(fn=on_set_frame, inputs=[set_frame_start, preview_frame_num], outputs=[text_frame_clip])
@@ -1481,7 +1540,13 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
     roop.config.globals.no_face_action = index_of_no_face_action(no_face_action)
     roop.config.globals.vr_mode = vr_mode
     roop.config.globals.autorotate_faces = auto_rotate
-    roop.config.globals.subsample_size = int(upsample[:3])
+    selected_face_swap_model = get_face_swap_model_key(getattr(roop.config.globals.CFG, "face_swap_model", None))
+    normalized_upscale = normalize_face_swap_upscale(upsample, selected_face_swap_model)
+    roop.config.globals.CFG.subsample_upscale = normalized_upscale
+    roop.config.globals.subsample_size = parse_face_swap_upscale_size(
+        normalized_upscale,
+        selected_face_swap_model,
+    )
 
 
     mask_engine = map_mask_engine(selected_mask_engine, clip_text)
@@ -1492,7 +1557,8 @@ def on_preview_frame_changed(frame_num, files, fake_preview, enhancer, detection
         face_index = 0
    
     options = ProcessOptions(get_processing_plugins(mask_engine), roop.config.globals.distance_threshold, roop.config.globals.blend_ratio,
-                              roop.config.globals.face_swap_mode, face_index, clip_text, maskimage, num_steps, roop.config.globals.subsample_size, show_face_area, restore_original_mouth)
+                              roop.config.globals.face_swap_mode, face_index, clip_text, maskimage, num_steps, roop.config.globals.subsample_size, show_face_area, restore_original_mouth,
+                              face_swap_model=selected_face_swap_model)
 
     current_frame = live_swap(current_frame, options)
     if current_frame is None:
@@ -1615,9 +1681,12 @@ def translate_swap_mode(dropdown_text):
 def create_resume_settings_snapshot(output_method, enhancer, detection, keep_frames, wait_after_extraction, skip_audio, face_distance, blend_ratio,
                                     selected_mask_engine, clip_text, processing_method, no_face_action, vr_mode, autorotate,
                                     restore_original_mouth, num_swap_steps, upsample):
+    face_swap_model = get_face_swap_model_key(getattr(roop.config.globals.CFG, "face_swap_model", None))
+    normalized_upscale = normalize_face_swap_upscale(upsample, face_swap_model)
     return {
         "output_method": output_method,
         "enhancer": enhancer,
+        "face_swap_model": face_swap_model,
         "detection": detection,
         "keep_frames": bool(keep_frames),
         "wait_after_extraction": bool(wait_after_extraction),
@@ -1632,7 +1701,7 @@ def create_resume_settings_snapshot(output_method, enhancer, detection, keep_fra
         "autorotate": bool(autorotate),
         "restore_original_mouth": bool(restore_original_mouth),
         "num_swap_steps": int(num_swap_steps),
-        "upsample": upsample,
+        "upsample": normalized_upscale,
     }
 
 
@@ -1690,7 +1759,13 @@ def start_swap( output_method, enhancer, detection, keep_frames, wait_after_extr
     roop.config.globals.no_face_action = index_of_no_face_action(no_face_action)
     roop.config.globals.vr_mode = vr_mode
     roop.config.globals.autorotate_faces = autorotate
-    roop.config.globals.subsample_size = int(upsample[:3])
+    selected_face_swap_model = get_face_swap_model_key(getattr(roop.config.globals.CFG, "face_swap_model", None))
+    normalized_upscale = normalize_face_swap_upscale(upsample, selected_face_swap_model)
+    roop.config.globals.CFG.subsample_upscale = normalized_upscale
+    roop.config.globals.subsample_size = parse_face_swap_upscale_size(
+        normalized_upscale,
+        selected_face_swap_model,
+    )
     mask_engine = map_mask_engine(selected_mask_engine, clip_text)
 
     if roop.config.globals.face_swap_mode == 'selected':

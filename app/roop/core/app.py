@@ -41,6 +41,7 @@ from roop.progress.status import finish_processing_status, set_processing_messag
 from roop.pipeline.staged_executor.executor import StagedBatchExecutor
 from roop.core import providers as core_providers
 from roop.core import resources as core_resources
+from roop.face_swap_models import ensure_face_swap_model_downloaded, parse_face_swap_upscale_size
 
 
 clip_text = None
@@ -107,7 +108,7 @@ def pre_check() -> bool:
         return False
     
     download_directory_path = util.resolve_relative_path('../models')
-    util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/inswapper_128.onnx'])
+    ensure_face_swap_model_downloaded(getattr(roop.config.globals.CFG, "face_swap_model", None))
     util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/GFPGANv1.4.onnx'])
     util.conditional_download(download_directory_path, ['https://github.com/csxmli2016/DMDNet/releases/download/v1/DMDNet.pth'])
     util.conditional_download(download_directory_path, ['https://huggingface.co/countfloyd/deepfake/resolve/main/GPEN-BFR-512.onnx'])
@@ -430,9 +431,13 @@ def destroy() -> None:
 
 def run() -> None:
     parse_args()
+    roop.config.globals.CFG = Settings('config.yaml')
+    roop.config.globals.subsample_size = parse_face_swap_upscale_size(
+        getattr(roop.config.globals.CFG, "subsample_upscale", "256px"),
+        getattr(roop.config.globals.CFG, "face_swap_model", None),
+    )
     if not pre_check():
         return
-    roop.config.globals.CFG = Settings('config.yaml')
     roop.config.globals.cuda_device_id = roop.config.globals.startup_args.cuda_device_id
     roop.config.globals.execution_threads = roop.config.globals.CFG.max_threads
     roop.config.globals.video_encoder = roop.config.globals.CFG.output_video_codec
