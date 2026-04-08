@@ -2,7 +2,11 @@ from types import SimpleNamespace
 
 import roop.config.globals
 from roop.config.settings import Settings
-from roop.face_swap_models import get_face_swap_upscale_choices, parse_face_swap_upscale_size
+from roop.face_swap_models import (
+    get_face_swap_model_choices,
+    get_face_swap_upscale_choices,
+    parse_face_swap_upscale_size,
+)
 from roop.memory.planner import describe_memory_plan, resolve_memory_plan, resolve_single_batch_workers
 from roop.pipeline.options import ProcessOptions
 from roop.pipeline.staged_executor.cache import get_staged_cache_options_snapshot
@@ -72,6 +76,11 @@ def test_settings_rounds_hyperswap_upscale_to_supported_choice(tmp_path):
     assert cfg.face_swap_model == "hyperswap_1c_256"
     assert cfg.subsample_upscale == "512px"
     assert get_face_swap_upscale_choices(cfg.face_swap_model) == ["256px", "512px", "768px", "1024px"]
+
+
+def test_face_swap_model_choices_include_inswapper_fp16():
+    assert "inswapper_128_fp16" in get_face_swap_model_choices()
+    assert get_face_swap_upscale_choices("inswapper_128_fp16") == ["128px", "256px", "384px", "512px", "768px", "1024px"]
 
 
 def test_resolve_memory_plan_uses_manual_stage_tuning(monkeypatch):

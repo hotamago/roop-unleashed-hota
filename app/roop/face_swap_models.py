@@ -12,6 +12,16 @@ FACE_SWAP_MODEL_SET = {
         "standard_deviation": [1.0, 1.0, 1.0],
         "upscale_choices": ["128px", "256px", "384px", "512px", "768px", "1024px"],
     },
+    "inswapper_128_fp16": {
+        "filename": "inswapper_128_fp16.onnx",
+        "url": "https://huggingface.co/ninjawick/webui-faceswap-unlocked/resolve/main/inswapper_128_fp16.onnx",
+        "tile_size": 128,
+        "type": "inswapper",
+        "template": "arcface_128",
+        "mean": [0.0, 0.0, 0.0],
+        "standard_deviation": [1.0, 1.0, 1.0],
+        "upscale_choices": ["128px", "256px", "384px", "512px", "768px", "1024px"],
+    },
     "hyperswap_1a_256": {
         "filename": "hyperswap_1a_256.onnx",
         "url": "https://huggingface.co/facefusion/models-3.3.0/resolve/main/hyperswap_1a_256.onnx",
