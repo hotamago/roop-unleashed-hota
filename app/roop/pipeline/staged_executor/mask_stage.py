@@ -8,7 +8,7 @@ from .chunk_processor import flatten_tasks, iter_chunk_source_frames_with_meta
 from .detect_stage import flatten_pack_tasks
 from .swap_stage import get_swap_source_stage_dir
 from .video_iter import iter_video_chunk
-from .cache import chunked, normalize_cache_image, write_json
+from .cache import chunked, normalize_cache_image, write_json, write_stage_cache_checkpoint
 
 
 def run_mask_single_outputs(executor, processor, original_batch):
@@ -136,6 +136,7 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
             pack_tasks = flatten_pack_tasks(executor, pack_data)
             if not pack_tasks:
                 continue
+            checkpoint_interval = max(256, min(1024, len(pack_tasks) // 2 or 256))
             input_cache_path = executor.get_stage_pack_path(swap_dir, pack_data["start_sequence"], pack_data["end_sequence"])
             input_cache = executor.read_stage_cache_map(input_cache_path)
             source_cache_path = executor.get_stage_pack_path(
@@ -155,6 +156,7 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
                 task_batch = []
                 original_batch = []
                 pack_cache_dirty = False
+                pending_checkpoint_tasks = 0
                 for _frame_meta, task_meta in pack_tasks:
                     if task_meta["cache_key"] in pack_cache:
                         processed_tasks += 1
@@ -179,6 +181,10 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
                         )
                         pack_cache_dirty = True
                         processed_tasks += len(task_batch)
+                        pending_checkpoint_tasks += len(task_batch)
+                        if pending_checkpoint_tasks >= checkpoint_interval:
+                            write_stage_cache_checkpoint(pack_cache_path, pack_cache)
+                            pending_checkpoint_tasks = 0
                         task_batch.clear()
                         original_batch.clear()
                 if task_batch:
@@ -206,6 +212,7 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
             task_batch = []
             original_batch = []
             pack_cache_dirty = False
+            pending_checkpoint_tasks = 0
             for frame_number, frame in iter_video_chunk(
                 entry.filename,
                 pack_data["frames"][0]["frame_number"],
@@ -237,6 +244,10 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
                         )
                         pack_cache_dirty = True
                         processed_tasks += len(task_batch)
+                        pending_checkpoint_tasks += len(task_batch)
+                        if pending_checkpoint_tasks >= checkpoint_interval:
+                            write_stage_cache_checkpoint(pack_cache_path, pack_cache)
+                            pending_checkpoint_tasks = 0
                         task_batch.clear()
                         original_batch.clear()
             if task_batch:
@@ -292,7 +303,9 @@ def ensure_mask_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
     task_batch_size = max(1, min(128, memory_plan["mask_batch_size"]))
     cache_dirty = False
     try:
+        checkpoint_interval = max(64, min(512, total_tasks // 2 or 64))
         if source_cache and len(source_cache) >= total_tasks:
+            pending_checkpoint_tasks = 0
             for task_batch_meta in chunked(flat_tasks, task_batch_size):
                 pending = [dict(task_meta) for _, task_meta in task_batch_meta if task_meta["cache_key"] not in mask_cache]
                 if not pending:
@@ -318,12 +331,17 @@ def ensure_mask_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
                 )
                 cache_dirty = True
                 processed_tasks += len(task_batch_meta)
+                pending_checkpoint_tasks += len(pending)
+                if pending_checkpoint_tasks >= checkpoint_interval:
+                    write_stage_cache_checkpoint(cache_path, mask_cache)
+                    pending_checkpoint_tasks = 0
             else:
                 if cache_dirty:
                     executor.write_stage_cache_map(cache_path, mask_cache)
                 chunk_state["stages"]["mask"] = True
                 return
 
+        pending_checkpoint_tasks = 0
         for _, frame, frame_meta in iter_chunk_source_frames_with_meta(executor, chunk_meta, memory_plan, video_path=video_path, source_image=source_image):
             for task_meta in frame_meta["tasks"]:
                 if task_meta["cache_key"] in mask_cache:
@@ -349,6 +367,10 @@ def ensure_mask_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
                     )
                     cache_dirty = True
                     processed_tasks += len(task_batch)
+                    pending_checkpoint_tasks += len(task_batch)
+                    if pending_checkpoint_tasks >= checkpoint_interval:
+                        write_stage_cache_checkpoint(cache_path, mask_cache)
+                        pending_checkpoint_tasks = 0
                     task_batch.clear()
                     original_batch.clear()
         if task_batch:

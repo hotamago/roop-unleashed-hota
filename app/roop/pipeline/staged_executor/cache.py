@@ -293,6 +293,13 @@ def write_stage_cache_map(cache_path_or_executor, cache_path: Path | None = None
     Path(cache_path).unlink(missing_ok=True)
 
 
+def write_stage_cache_checkpoint(cache_path_or_executor, cache_path: Path | None = None, cache_map=None):
+    if cache_map is None:
+        cache_path, cache_map = cache_path_or_executor, cache_path
+    serializable = {str(key): normalize_cache_image(value) for key, value in cache_map.items()}
+    write_cache_blob(Path(cache_path), {"images": serializable})
+
+
 def count_stage_cache_entries(cache_path_or_executor, cache_path: Path | None = None):
     if cache_path is None:
         cache_path = cache_path_or_executor
@@ -385,5 +392,6 @@ __all__ = [
     "write_cache_blob",
     "write_image",
     "write_json",
+    "write_stage_cache_checkpoint",
     "write_stage_cache_map",
 ]

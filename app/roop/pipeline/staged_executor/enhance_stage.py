@@ -5,7 +5,7 @@ from roop.pipeline.batch_executor import ProcessMgr
 
 from .chunk_processor import flatten_tasks
 from .detect_stage import flatten_pack_tasks
-from .cache import chunked, normalize_cache_image, write_json
+from .cache import chunked, normalize_cache_image, write_json, write_stage_cache_checkpoint
 
 
 def get_enhance_task_batch_size(executor, memory_plan):
@@ -60,6 +60,7 @@ def ensure_full_enhance_stage(executor, detect_dir, swap_dir, mask_dir, enhance_
             pack_tasks = flatten_pack_tasks(executor, pack_data)
             if not pack_tasks:
                 continue
+            checkpoint_interval = max(256, min(1024, len(pack_tasks) // 2 or 256))
             input_cache_path = executor.get_stage_pack_path(mask_dir if executor.mask_name else swap_dir, pack_data["start_sequence"], pack_data["end_sequence"])
             input_cache = executor.read_stage_cache_map(input_cache_path)
             pack_cache_path = executor.get_stage_pack_path(enhance_dir, pack_data["start_sequence"], pack_data["end_sequence"])
@@ -70,6 +71,7 @@ def ensure_full_enhance_stage(executor, detect_dir, swap_dir, mask_dir, enhance_
                 continue
             task_batch = []
             pack_cache_dirty = False
+            pending_checkpoint_tasks = 0
             for _, task_meta in pack_tasks:
                 if task_meta["cache_key"] in pack_cache:
                     processed_tasks += 1
@@ -92,6 +94,10 @@ def ensure_full_enhance_stage(executor, detect_dir, swap_dir, mask_dir, enhance_
                     )
                     pack_cache_dirty = True
                     processed_tasks += len(task_batch)
+                    pending_checkpoint_tasks += len(task_batch)
+                    if pending_checkpoint_tasks >= checkpoint_interval:
+                        write_stage_cache_checkpoint(pack_cache_path, pack_cache)
+                        pending_checkpoint_tasks = 0
                     task_batch.clear()
             if task_batch:
                 process_full_enhance_batch(
@@ -141,6 +147,8 @@ def ensure_enhance_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_pl
     task_batch_size = get_enhance_task_batch_size(executor, memory_plan)
     cache_dirty = False
     try:
+        checkpoint_interval = max(64, min(512, total_tasks // 2 or 64))
+        pending_checkpoint_tasks = 0
         for batch in chunked(flat_tasks, task_batch_size):
             pending = [(frame_meta, task_meta) for frame_meta, task_meta in batch if task_meta["cache_key"] not in enhance_cache]
             if not pending:
@@ -154,7 +162,11 @@ def ensure_enhance_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_pl
                 enhance_cache[task_meta["cache_key"]] = normalize_cache_image(enhanced_frames[task_meta["cache_key"]])
             cache_dirty = True
             processed_tasks += len(batch)
+            pending_checkpoint_tasks += len(task_batch)
             executor.update_progress("enhance", detail="Running enhancement stage", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
+            if pending_checkpoint_tasks >= checkpoint_interval:
+                write_stage_cache_checkpoint(cache_path, enhance_cache)
+                pending_checkpoint_tasks = 0
         if cache_dirty:
             executor.write_stage_cache_map(cache_path, enhance_cache)
     finally:

@@ -111,23 +111,42 @@ def ensure_full_detect_stage(executor, entry, endframe, detect_dir, stages, mani
     try:
         for pack_start, pack_end in executor.iter_detect_pack_ranges(frame_count):
             pack_path = executor.get_detect_pack_path(detect_dir, pack_start, pack_end)
+            expected_pack_frames = (pack_end - pack_start) + 1
+            checkpoint_interval = max(64, min(256, expected_pack_frames // 2 or 64))
             if pack_path.exists():
                 pack_data = read_cache_blob(pack_path)
                 pack_frames = pack_data.get("frames", [])
-                processed_frames += len(pack_frames)
+                cached_pack_frames = len(pack_frames)
+                processed_frames += cached_pack_frames
                 total_tasks += sum(len(frame_meta["tasks"]) for frame_meta in pack_frames)
+                if cached_pack_frames >= expected_pack_frames:
+                    executor.update_progress(
+                        "detect",
+                        detail="Reusing packed detect cache",
+                        step_completed=processed_frames,
+                        step_total=frame_count,
+                        step_unit="frames",
+                    )
+                    continue
                 executor.update_progress(
                     "detect",
-                    detail="Reusing packed detect cache",
+                    detail="Resuming partial detect pack",
                     step_completed=processed_frames,
                     step_total=frame_count,
                     step_unit="frames",
                 )
-                continue
+            else:
+                pack_data = {
+                    "start_sequence": pack_start,
+                    "end_sequence": pack_end,
+                    "frames": [],
+                }
+                pack_frames = pack_data["frames"]
 
-            pack_frames = []
-            absolute_start = entry.startframe + pack_start - 1
+            next_sequence = pack_start + len(pack_frames)
+            absolute_start = entry.startframe + next_sequence - 1
             absolute_end = entry.startframe + pack_end
+            frames_since_checkpoint = 0
             for frame_number, frame in iter_video_chunk(entry.filename, absolute_start, absolute_end, memory_plan["prefetch_frames"]):
                 seq_index = (frame_number - entry.startframe) + 1
                 frame_plan = planner.build_frame_plan(frame)
@@ -145,6 +164,7 @@ def ensure_full_detect_stage(executor, entry, endframe, detect_dir, stages, mani
                 pack_frames.append(frame_meta)
                 total_tasks += len(frame_meta["tasks"])
                 processed_frames += 1
+                frames_since_checkpoint += 1
                 executor.update_progress(
                     "detect",
                     detail="Streaming source decode + packed face detection",
@@ -152,15 +172,11 @@ def ensure_full_detect_stage(executor, entry, endframe, detect_dir, stages, mani
                     step_total=frame_count,
                     step_unit="frames",
                 )
+                if frames_since_checkpoint >= checkpoint_interval:
+                    write_cache_blob(pack_path, pack_data)
+                    frames_since_checkpoint = 0
             if pack_frames:
-                write_cache_blob(
-                    pack_path,
-                    {
-                        "start_sequence": pack_start,
-                        "end_sequence": pack_end,
-                        "frames": pack_frames,
-                    },
-                )
+                write_cache_blob(pack_path, pack_data)
             manifest["frame_count"] = processed_frames
             manifest["task_count"] = total_tasks
             write_json(detect_dir.parent / "manifest.json", manifest)

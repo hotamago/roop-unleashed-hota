@@ -12,7 +12,10 @@ from roop.pipeline.staged_executor.executor import (
     get_entry_job_relpath,
     get_entry_signature,
     normalize_cache_image,
+    read_cache_blob,
+    write_cache_blob,
 )
+from roop.pipeline.staged_executor import cache as stage_cache_lib
 
 
 def make_options(processors):
@@ -43,6 +46,77 @@ def test_stage_cache_roundtrip_uses_binary_blob(tmp_path):
     assert set(loaded.keys()) == {"face_a", "face_b"}
     assert np.array_equal(loaded["face_a"], images["face_a"])
     assert np.array_equal(loaded["face_b"], images["face_b"])
+
+
+def test_stage_cache_checkpoint_roundtrip_reuses_partial_blob(tmp_path):
+    executor = StagedBatchExecutor("File", None, make_options({"faceswap": {}}))
+    cache_path = executor.get_stage_cache_path(tmp_path / "swap")
+    images = {
+        "face_a": np.full((2, 2, 3), 7, dtype=np.uint8),
+        "face_b": np.full((2, 2, 3), 9, dtype=np.uint8),
+    }
+
+    stage_cache_lib.write_stage_cache_checkpoint(cache_path, images)
+    loaded = executor.read_stage_cache_map(cache_path)
+
+    assert executor.count_stage_cache_entries(cache_path) == 2
+    assert set(loaded.keys()) == {"face_a", "face_b"}
+    assert np.array_equal(loaded["face_a"], images["face_a"])
+    assert np.array_equal(loaded["face_b"], images["face_b"])
+
+
+def test_ensure_full_detect_stage_resumes_partial_pack(tmp_path, monkeypatch):
+    executor = StagedBatchExecutor("File", None, make_options({}))
+    entry = ProcessEntry("clip.mp4", 0, 4, 30.0)
+    detect_dir = tmp_path / "detect"
+    stages = {"detect": False}
+    manifest = {}
+    memory_plan = {"prefetch_frames": 2}
+    pack_path = executor.get_detect_pack_path(detect_dir, 1, 4)
+    write_cache_blob(
+        pack_path,
+        {
+            "start_sequence": 1,
+            "end_sequence": 4,
+            "frames": [
+                {"frame_number": 0, "sequence": 1, "fallback": True, "tasks": []},
+                {"frame_number": 1, "sequence": 2, "fallback": True, "tasks": []},
+            ],
+        },
+    )
+    iter_calls = []
+
+    class FakePlanner:
+        def __init__(self, _progress):
+            return None
+
+        def initialize(self, *_args, **_kwargs):
+            return None
+
+        def build_frame_plan(self, _frame):
+            return {"fallback": True, "tasks": []}
+
+        def release_resources(self):
+            return None
+
+    def fake_iter_video_chunk(_video_path, frame_start, frame_end, prefetch_frames):
+        iter_calls.append((frame_start, frame_end, prefetch_frames))
+        for frame_number in range(frame_start, frame_end):
+            yield frame_number, np.zeros((2, 2, 3), dtype=np.uint8)
+
+    monkeypatch.setattr("roop.pipeline.staged_executor.detect_stage.ProcessMgr", FakePlanner)
+    monkeypatch.setattr("roop.pipeline.staged_executor.detect_stage.iter_video_chunk", fake_iter_video_chunk)
+    monkeypatch.setattr(executor, "get_detect_pack_frame_count", lambda: 4)
+    monkeypatch.setattr(executor, "update_progress", lambda *args, **kwargs: None)
+
+    task_count = executor.ensure_full_detect_stage(entry, 4, detect_dir, stages, manifest, memory_plan)
+    pack_data = read_cache_blob(pack_path)
+
+    assert task_count == 0
+    assert iter_calls == [(2, 4, 2)]
+    assert len(pack_data["frames"]) == 4
+    assert pack_data["frames"][2]["frame_number"] == 2
+    assert pack_data["frames"][3]["frame_number"] == 3
 
 
 def test_ensure_enhance_stage_flushes_cache_once_per_chunk(tmp_path, monkeypatch):
