@@ -11,6 +11,7 @@ import roop.media.ffmpeg_ops as ffmpeg
 import roop.utils as util
 from roop.media.capturer import get_video_frame_total
 from roop.media.video_io import open_video_capture
+from roop.memory import provider_uses_gpu, resolve_single_batch_workers
 from roop.pipeline.batch_executor import ProcessMgr
 from roop.pipeline.staged_executor.cache import (
     AsyncWritePipeline,
@@ -82,6 +83,39 @@ def get_one_chain_worker_count():
         return max(1, int(getattr(roop.config.globals, "execution_threads", 1) or 1))
     except (TypeError, ValueError):
         return 1
+
+
+def get_one_chain_prefetch_frames():
+    try:
+        return max(1, int(getattr(getattr(roop.config.globals, "CFG", None), "prefetch_frames", 32) or 32))
+    except (TypeError, ValueError):
+        return 32
+
+
+def _append_worker_reason(reason: str | None, extra_reason: str | None) -> str | None:
+    if not extra_reason:
+        return reason
+    if not reason:
+        return extra_reason
+    return f"{reason}; {extra_reason}"
+
+
+def resolve_one_chain_worker_config(options=None):
+    requested_threads = get_one_chain_worker_count()
+    effective_workers, _requested_workers, reason = resolve_single_batch_workers(requested_threads)
+    processor_keys = set((getattr(options, "processors", None) or {}).keys())
+    if provider_uses_gpu() and "faceswap" in processor_keys and effective_workers > 2:
+        effective_workers = 2
+        reason = _append_worker_reason(reason, "one-chain GPU face pipeline cap 2")
+    prefetch_frames = get_one_chain_prefetch_frames()
+    max_in_flight = max(prefetch_frames, requested_threads * 2, effective_workers)
+    return {
+        "requested_threads": requested_threads,
+        "effective_workers": effective_workers,
+        "reason": reason,
+        "prefetch_frames": prefetch_frames,
+        "max_in_flight": max_in_flight,
+    }
 
 
 class OneChainAllExecutor:
@@ -241,7 +275,11 @@ class OneChainAllExecutor:
 
     def _process_stream_to_cache(self, entry, index, total_files, cache_dir, manifest, manifest_path, fps):
         process_mgr = None
-        worker_count = get_one_chain_worker_count()
+        worker_config = resolve_one_chain_worker_config(self.options)
+        worker_count = worker_config["effective_workers"]
+        requested_threads = worker_config["requested_threads"]
+        prefetch_frames = worker_config["prefetch_frames"]
+        max_in_flight = worker_config["max_in_flight"]
         if worker_count <= 1:
             process_mgr = self._ensure_process_mgr()
             process_mgr.set_progress_context("one_chain", entry.filename, index + 1, total_files, unit="frames")
@@ -302,7 +340,10 @@ class OneChainAllExecutor:
             force_log=True,
         )
         manifest["status"] = "running"
-        self.update_progress("one_chain", detail="Streaming source decode + full-chain processing into packed video cache", step_completed=completed_frames, step_total=manifest["frame_count"], step_unit="frames", force_log=True)
+        worker_detail = f"Streaming source decode + full-chain processing into packed video cache | GPU workers: {worker_count}/{requested_threads}"
+        if worker_config["reason"]:
+            worker_detail = f"{worker_detail} ({worker_config['reason']})"
+        self.update_progress("one_chain", detail=worker_detail, step_completed=completed_frames, step_total=manifest["frame_count"], step_unit="frames", force_log=True)
         stage_cache = VideoStageCache(
             codec="auto",
             crf=0,
@@ -341,7 +382,7 @@ class OneChainAllExecutor:
             if worker_pool is None:
                 frame_cache = {}
                 frames_seen = 0
-                for frame_number, frame in iter_video_chunk(entry.filename, segment_start, segment_end, getattr(roop.config.globals.CFG, "prefetch_frames", 32)):
+                for frame_number, frame in iter_video_chunk(entry.filename, segment_start, segment_end, prefetch_frames):
                     result = process_mgr.process_frame(frame)
                     if result is None:
                         result = frame
@@ -355,7 +396,6 @@ class OneChainAllExecutor:
             frame_cache = {}
             frames_seen = 0
             next_result_frame = segment_start
-            max_in_flight = max(worker_count * 2, 1)
 
             def flush_done_futures(done_futures):
                 nonlocal frames_seen, next_result_frame
@@ -368,7 +408,7 @@ class OneChainAllExecutor:
                     next_result_frame += 1
                     yield frames_seen, frame_cache
 
-            for frame_number, frame in iter_video_chunk(entry.filename, segment_start, segment_end, getattr(roop.config.globals.CFG, "prefetch_frames", 32)):
+            for frame_number, frame in iter_video_chunk(entry.filename, segment_start, segment_end, prefetch_frames):
                 while len(pending_futures) >= max_in_flight:
                     done_futures, _ = wait(set(pending_futures), return_when=FIRST_COMPLETED)
                     for progress_update in flush_done_futures(done_futures):
@@ -584,8 +624,10 @@ __all__ = [
     "get_one_chain_chunk_size",
     "get_one_chain_frame_key",
     "get_one_chain_manifest_signature",
+    "get_one_chain_prefetch_frames",
     "get_one_chain_segment_key",
     "get_one_chain_segment_path",
     "get_one_chain_worker_count",
     "iter_one_chain_ranges",
+    "resolve_one_chain_worker_config",
 ]
