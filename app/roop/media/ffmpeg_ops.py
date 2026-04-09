@@ -20,6 +20,9 @@ def _strip_preset_arg(ffmpeg_params: List[str]) -> List[str]:
         if token == "-preset":
             skip_next = True
             continue
+        if token == "-b:v":
+            skip_next = True
+            continue
         cleaned.append(token)
     return cleaned
 
