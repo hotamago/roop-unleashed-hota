@@ -55,7 +55,11 @@ def _build_concat_reencode_args() -> List[str]:
             ]
         )
 
-    return ["-c:v", resolved_codec, *quality_args, *ffmpeg_params]
+    # Log print the ffmpeg params
+    final_params = ["-c:v", resolved_codec, *quality_args, *ffmpeg_params]
+    print(final_params)
+
+    return final_params
 
 def run_ffmpeg(args: List[str]) -> bool:
     commands = ['ffmpeg', '-hide_banner', '-hwaccel', 'auto', '-y', '-loglevel', roop.config.globals.log_level]
