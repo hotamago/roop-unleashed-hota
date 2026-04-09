@@ -1448,11 +1448,12 @@ class ProcessMgr():
     def should_use_gpu_compositor(self):
         if self.gpu_composite_enabled is not None:
             return self.gpu_composite_enabled
-        enabled = False
-        if torch is not None and torch_functional is not None and torch.cuda.is_available():
-            enabled = get_device() in ("cuda", "tensorrt", "rocm")
-        self.gpu_composite_enabled = enabled
-        return enabled
+        # Disabled for now: the newer torch-based compositor introduced after
+        # caae3c9cd7599b9471802b9576c25f49f2a4784e regressed preview/composite
+        # placement on real swaps. Keep the CPU/OpenCV compositor as the only
+        # active path until GPU parity is restored.
+        self.gpu_composite_enabled = False
+        return False
 
     def get_gpu_composite_device(self):
         if not self.should_use_gpu_compositor():
