@@ -5,7 +5,7 @@ from roop.pipeline.batch_executor import ProcessMgr
 
 from .chunk_processor import flatten_tasks
 from .detect_stage import flatten_pack_tasks
-from .cache import chunked, normalize_cache_image, write_json, write_stage_cache_checkpoint
+from .cache import AsyncWritePipeline, chunked, normalize_cache_image, write_json, write_stage_cache_checkpoint
 
 
 def get_enhance_task_batch_size(executor, memory_plan):
@@ -55,6 +55,7 @@ def ensure_full_enhance_stage(executor, detect_dir, swap_dir, mask_dir, enhance_
     processor = enhance_mgr.processors[0]
     processed_tasks = 0
     task_batch_size = get_enhance_task_batch_size(executor, memory_plan)
+    cache_writer = AsyncWritePipeline("enhance_cache_write")
     try:
         for pack_data in executor.iter_detect_packs(detect_dir):
             pack_tasks = flatten_pack_tasks(executor, pack_data)
@@ -116,8 +117,9 @@ def ensure_full_enhance_stage(executor, detect_dir, swap_dir, mask_dir, enhance_
                 pack_cache_dirty = True
                 processed_tasks += len(task_batch)
             if pack_cache_dirty:
-                executor.write_stage_cache_map(pack_cache_path, pack_cache)
+                cache_writer.submit(executor.write_stage_cache_map, pack_cache_path, pack_cache)
     finally:
+        cache_writer.close()
         enhance_mgr.release_resources()
     stages["enhance"] = True
     write_json(enhance_dir.parent / "manifest.json", manifest)

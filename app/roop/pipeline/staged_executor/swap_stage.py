@@ -4,7 +4,7 @@ from roop.pipeline.batch_executor import ProcessMgr
 from .chunk_processor import flatten_tasks, iter_chunk_source_frames_with_meta
 from .detect_stage import flatten_pack_tasks
 from .video_iter import iter_video_chunk
-from .cache import normalize_cache_image, write_json, write_stage_cache_checkpoint
+from .cache import AsyncWritePipeline, normalize_cache_image, write_json, write_stage_cache_bundle, write_stage_cache_checkpoint
 
 
 def get_swap_task_batch_size(executor, memory_plan):
@@ -39,6 +39,7 @@ def ensure_full_swap_stage(executor, entry, endframe, detect_dir, swap_dir, task
     processed_tasks = 0
     task_batch_size = get_swap_task_batch_size(executor, memory_plan)
     source_cache_dir = get_swap_source_stage_dir(swap_dir) if executor.mask_name is not None else None
+    cache_writer = AsyncWritePipeline("swap_cache_write")
     if source_cache_dir is not None:
         source_cache_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -111,10 +112,12 @@ def ensure_full_swap_stage(executor, entry, endframe, detect_dir, swap_dir, task
                 processed_tasks += len(task_batch)
                 executor.update_progress("swap", detail="Streaming source decode + batched face swap", step_completed=processed_tasks, step_total=task_count, step_unit="faces")
             if pack_cache_dirty:
-                executor.write_stage_cache_map(pack_cache_path, pack_cache)
+                entries = [(pack_cache_path, pack_cache)]
                 if source_cache_path is not None:
-                    executor.write_stage_cache_map(source_cache_path, source_pack_cache)
+                    entries.append((source_cache_path, source_pack_cache))
+                cache_writer.submit(write_stage_cache_bundle, entries)
     finally:
+        cache_writer.close()
         swap_mgr.release_resources()
     stages["swap"] = True
     write_json(swap_dir.parent / "manifest.json", manifest)

@@ -3,6 +3,7 @@ import json
 import os
 import pickle
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
@@ -17,6 +18,41 @@ from .video_cache import VideoStageCache, normalize_cache_image
 PIPELINE_VERSION = 14
 DETECT_PACK_FRAME_COUNT = 256
 _STAGE_CACHE = VideoStageCache()
+
+
+class AsyncWritePipeline:
+    def __init__(self, thread_name_prefix="stage_cache_write"):
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=thread_name_prefix)
+        self._pending_future = None
+        self._pending_callback = None
+
+    def _drain_pending(self, wait):
+        if self._pending_future is None:
+            return
+        if not wait and not self._pending_future.done():
+            return
+        self._pending_future.result()
+        if self._pending_callback is not None:
+            self._pending_callback()
+        self._pending_future = None
+        self._pending_callback = None
+
+    def poll(self):
+        self._drain_pending(wait=False)
+
+    def submit(self, func, *args, on_complete=None, **kwargs):
+        self._drain_pending(wait=True)
+        self._pending_future = self._executor.submit(func, *args, **kwargs)
+        self._pending_callback = on_complete
+
+    def flush(self):
+        self._drain_pending(wait=True)
+
+    def close(self):
+        try:
+            self.flush()
+        finally:
+            self._executor.shutdown(wait=True)
 
 
 def get_jobs_root():
@@ -288,9 +324,18 @@ def list_stage_cache_keys(cache_path_or_executor, cache_path: Path | None = None
 def write_stage_cache_map(cache_path_or_executor, cache_path: Path | None = None, cache_map=None):
     if cache_map is None:
         cache_path, cache_map = cache_path_or_executor, cache_path
+    write_stage_cache_map_sync(cache_path, cache_map)
+
+
+def write_stage_cache_map_sync(cache_path: Path, cache_map):
     serializable = {str(key): normalize_cache_image(value) for key, value in cache_map.items()}
     _STAGE_CACHE.write(cache_path, serializable)
     Path(cache_path).unlink(missing_ok=True)
+
+
+def write_stage_cache_bundle(entries):
+    for cache_path, cache_map in entries:
+        write_stage_cache_map_sync(cache_path, cache_map)
 
 
 def write_stage_cache_checkpoint(cache_path_or_executor, cache_path: Path | None = None, cache_map=None):
@@ -360,6 +405,7 @@ def cleanup_job_dir(_executor, _job_dir):
 
 
 __all__ = [
+    "AsyncWritePipeline",
     "DETECT_PACK_FRAME_COUNT",
     "PIPELINE_VERSION",
     "chunked",
@@ -392,6 +438,8 @@ __all__ = [
     "write_cache_blob",
     "write_image",
     "write_json",
+    "write_stage_cache_bundle",
     "write_stage_cache_checkpoint",
     "write_stage_cache_map",
+    "write_stage_cache_map_sync",
 ]

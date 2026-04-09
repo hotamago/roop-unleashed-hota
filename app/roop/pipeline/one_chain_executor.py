@@ -13,6 +13,7 @@ from roop.media.capturer import get_video_frame_total
 from roop.media.video_io import open_video_capture
 from roop.pipeline.batch_executor import ProcessMgr
 from roop.pipeline.staged_executor.cache import (
+    AsyncWritePipeline,
     get_entry_file_identity,
     get_entry_job_relpath,
     get_staged_cache_options_snapshot,
@@ -239,8 +240,11 @@ class OneChainAllExecutor:
         self.update_progress("images", detail="Completed one-chain-all image processing", step_completed=processed_images, step_total=processed_images, step_unit="images", force_log=True)
 
     def _process_stream_to_cache(self, entry, index, total_files, cache_dir, manifest, manifest_path, fps):
-        process_mgr = self._ensure_process_mgr()
-        process_mgr.set_progress_context("one_chain", entry.filename, index + 1, total_files, unit="frames")
+        process_mgr = None
+        worker_count = get_one_chain_worker_count()
+        if worker_count <= 1:
+            process_mgr = self._ensure_process_mgr()
+            process_mgr.set_progress_context("one_chain", entry.filename, index + 1, total_files, unit="frames")
 
         capture = open_video_capture(entry.filename)
         width = int(capture.get(3) or 0)
@@ -307,10 +311,34 @@ class OneChainAllExecutor:
             fps=max(1, round(fps)),
         )
         processed_frames = completed_frames
-        worker_count = get_one_chain_worker_count()
+        committed_frames = completed_frames
+        worker_pool = None
+        worker_state = local()
+        worker_managers = []
+        cache_writer = AsyncWritePipeline("one_chain_cache_write")
+
+        def get_thread_process_mgr():
+            thread_process_mgr = getattr(worker_state, "process_mgr", None)
+            if thread_process_mgr is None:
+                thread_process_mgr = ProcessMgr(None)
+                thread_process_mgr.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, self.options)
+                thread_process_mgr.set_progress_context("one_chain", entry.filename, index + 1, total_files, unit="frames")
+                worker_state.process_mgr = thread_process_mgr
+                worker_managers.append(thread_process_mgr)
+            return thread_process_mgr
+
+        def process_one_frame(frame_number, frame):
+            thread_process_mgr = get_thread_process_mgr()
+            result = thread_process_mgr.process_frame(frame)
+            if result is None:
+                result = frame
+            return frame_number, result
+
+        if worker_count > 1:
+            worker_pool = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="one_chain")
 
         def process_segment_frames(segment_start, segment_end):
-            if worker_count <= 1:
+            if worker_pool is None:
                 frame_cache = {}
                 frames_seen = 0
                 for frame_number, frame in iter_video_chunk(entry.filename, segment_start, segment_end, getattr(roop.config.globals.CFG, "prefetch_frames", 32)):
@@ -322,31 +350,12 @@ class OneChainAllExecutor:
                     yield frames_seen, frame_cache
                 return
 
-            worker_state = local()
-            worker_managers = []
             pending_futures = {}
             buffered_results = {}
             frame_cache = {}
             frames_seen = 0
             next_result_frame = segment_start
             max_in_flight = max(worker_count * 2, 1)
-
-            def get_thread_process_mgr():
-                thread_process_mgr = getattr(worker_state, "process_mgr", None)
-                if thread_process_mgr is None:
-                    thread_process_mgr = ProcessMgr(None)
-                    thread_process_mgr.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, self.options)
-                    thread_process_mgr.set_progress_context("one_chain", entry.filename, index + 1, total_files, unit="frames")
-                    worker_state.process_mgr = thread_process_mgr
-                    worker_managers.append(thread_process_mgr)
-                return thread_process_mgr
-
-            def process_one_frame(frame_number, frame):
-                thread_process_mgr = get_thread_process_mgr()
-                result = thread_process_mgr.process_frame(frame)
-                if result is None:
-                    result = frame
-                return frame_number, result
 
             def flush_done_futures(done_futures):
                 nonlocal frames_seen, next_result_frame
@@ -359,67 +368,80 @@ class OneChainAllExecutor:
                     next_result_frame += 1
                     yield frames_seen, frame_cache
 
-            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="one_chain") as pool:
-                try:
-                    for frame_number, frame in iter_video_chunk(entry.filename, segment_start, segment_end, getattr(roop.config.globals.CFG, "prefetch_frames", 32)):
-                        while len(pending_futures) >= max_in_flight:
-                            done_futures, _ = wait(set(pending_futures), return_when=FIRST_COMPLETED)
-                            for progress_update in flush_done_futures(done_futures):
-                                yield progress_update
-                        pending_futures[pool.submit(process_one_frame, frame_number, frame)] = frame_number
-                    while pending_futures:
-                        done_futures, _ = wait(set(pending_futures), return_when=FIRST_COMPLETED)
-                        for progress_update in flush_done_futures(done_futures):
-                            yield progress_update
-                finally:
-                    for worker_manager in worker_managers:
-                        worker_manager.release_resources()
+            for frame_number, frame in iter_video_chunk(entry.filename, segment_start, segment_end, getattr(roop.config.globals.CFG, "prefetch_frames", 32)):
+                while len(pending_futures) >= max_in_flight:
+                    done_futures, _ = wait(set(pending_futures), return_when=FIRST_COMPLETED)
+                    for progress_update in flush_done_futures(done_futures):
+                        yield progress_update
+                pending_futures[worker_pool.submit(process_one_frame, frame_number, frame)] = frame_number
+            while pending_futures:
+                done_futures, _ = wait(set(pending_futures), return_when=FIRST_COMPLETED)
+                for progress_update in flush_done_futures(done_futures):
+                    yield progress_update
 
-        for chunk_index, (start_frame, end_frame) in enumerate(chunk_ranges, start=1):
-            segment_key = get_one_chain_segment_key(start_frame, end_frame)
-            segment_path = get_one_chain_segment_path(cache_dir, start_frame, end_frame)
-            segment_state = segment_states.setdefault(segment_key, {})
-            segment_frame_count = max(0, end_frame - start_frame)
-            self.current_chunk_index = chunk_index
-            if segment_path.exists() and segment_state.get("completed"):
+        try:
+            for chunk_index, (start_frame, end_frame) in enumerate(chunk_ranges, start=1):
+                segment_key = get_one_chain_segment_key(start_frame, end_frame)
+                segment_path = get_one_chain_segment_path(cache_dir, start_frame, end_frame)
+                segment_state = segment_states.setdefault(segment_key, {})
+                segment_frame_count = max(0, end_frame - start_frame)
+                self.current_chunk_index = chunk_index
+                if segment_path.exists() and segment_state.get("completed"):
+                    self.completed_units = entry_progress_base + processed_frames
+                    self.update_progress("resume", detail=f"Reusing one-chain cache segment {segment_key}", step_completed=processed_frames, step_total=manifest["frame_count"], step_unit="frames", force_log=True)
+                    continue
+
+                frame_cache = {}
+                frames_seen = 0
+                checkpoint_completed_frames = processed_frames
+                for frames_seen, frame_cache in process_segment_frames(start_frame, end_frame):
+                    processed_frames += 1
+                    self.completed_units = entry_progress_base + processed_frames
+                    self.update_progress("one_chain", detail="Streaming source decode + full-chain processing into packed video cache", step_completed=processed_frames, step_total=manifest["frame_count"], step_unit="frames")
+
+                if not roop.config.globals.processing or frames_seen < segment_frame_count:
+                    manifest["status"] = "interrupted"
+                    manifest["process_complete"] = False
+                    processed_frames = checkpoint_completed_frames
+                    self.completed_units = entry_progress_base + checkpoint_completed_frames
+                    manifest["completed_frames"] = committed_frames
+                    segment_state["completed"] = False
+                    segment_path.unlink(missing_ok=True)
+                    segment_path.with_suffix(".idx.bin").unlink(missing_ok=True)
+                    write_json(manifest_path, manifest)
+                    self.update_progress("one_chain", detail=f"Interrupted while processing one-chain cache segment {segment_key}", step_completed=checkpoint_completed_frames, step_total=manifest["frame_count"], step_unit="frames", force_log=True)
+                    return False
+
+                def finalize_segment_write(
+                    current_segment_state=segment_state,
+                    current_segment_frame_count=segment_frame_count,
+                ):
+                    nonlocal committed_frames
+                    current_segment_state["completed"] = True
+                    current_segment_state["frame_count"] = current_segment_frame_count
+                    committed_frames += current_segment_frame_count
+                    manifest["completed_frames"] = committed_frames
+                    write_json(manifest_path, manifest)
+
+                cache_writer.submit(stage_cache.write, segment_path, frame_cache, on_complete=finalize_segment_write)
                 self.completed_units = entry_progress_base + processed_frames
-                self.update_progress("resume", detail=f"Reusing one-chain cache segment {segment_key}", step_completed=processed_frames, step_total=manifest["frame_count"], step_unit="frames", force_log=True)
-                continue
+                self.update_progress("one_chain", detail=f"Completed one-chain cache segment {segment_key}", step_completed=processed_frames, step_total=manifest["frame_count"], step_unit="frames", force_log=True)
 
-            frame_cache = {}
-            frames_seen = 0
-            checkpoint_completed_frames = processed_frames
-            for frames_seen, frame_cache in process_segment_frames(start_frame, end_frame):
-                processed_frames += 1
-                self.completed_units = entry_progress_base + processed_frames
-                self.update_progress("one_chain", detail="Streaming source decode + full-chain processing into packed video cache", step_completed=processed_frames, step_total=manifest["frame_count"], step_unit="frames")
-
-            if not roop.config.globals.processing or frames_seen < segment_frame_count:
-                manifest["status"] = "interrupted"
-                manifest["process_complete"] = False
-                processed_frames = checkpoint_completed_frames
-                self.completed_units = entry_progress_base + checkpoint_completed_frames
-                manifest["completed_frames"] = checkpoint_completed_frames
-                segment_state["completed"] = False
-                segment_path.unlink(missing_ok=True)
-                segment_path.with_suffix(".idx.bin").unlink(missing_ok=True)
-                write_json(manifest_path, manifest)
-                self.update_progress("one_chain", detail=f"Interrupted while processing one-chain cache segment {segment_key}", step_completed=checkpoint_completed_frames, step_total=manifest["frame_count"], step_unit="frames", force_log=True)
-                return False
-
-            stage_cache.write(segment_path, frame_cache)
-            segment_state["completed"] = True
-            segment_state["frame_count"] = segment_frame_count
-            manifest["completed_frames"] = processed_frames
+            cache_writer.close()
+            cache_writer = None
+            manifest["process_complete"] = True
+            manifest["completed_frames"] = committed_frames
             write_json(manifest_path, manifest)
             self.completed_units = entry_progress_base + processed_frames
-            self.update_progress("one_chain", detail=f"Completed one-chain cache segment {segment_key}", step_completed=processed_frames, step_total=manifest["frame_count"], step_unit="frames", force_log=True)
-
-        manifest["process_complete"] = True
-        write_json(manifest_path, manifest)
-        self.completed_units = entry_progress_base + processed_frames
-        self.update_progress("one_chain", detail="Completed one-chain packed cache generation", step_completed=processed_frames, step_total=manifest["frame_count"], step_unit="frames", force_log=True)
-        return True
+            self.update_progress("one_chain", detail="Completed one-chain packed cache generation", step_completed=processed_frames, step_total=manifest["frame_count"], step_unit="frames", force_log=True)
+            return True
+        finally:
+            if cache_writer is not None:
+                cache_writer.close()
+            if worker_pool is not None:
+                worker_pool.shutdown(wait=True)
+            for worker_manager in worker_managers:
+                worker_manager.release_resources()
 
     def _merge_processed_segments(self, entry, index, total_files, cache_dir, merged_video, manifest, manifest_path):
         if manifest.get("merge_complete") and merged_video.exists():

@@ -8,7 +8,7 @@ from .chunk_processor import flatten_tasks, iter_chunk_source_frames_with_meta
 from .detect_stage import flatten_pack_tasks
 from .swap_stage import get_swap_source_stage_dir
 from .video_iter import iter_video_chunk
-from .cache import chunked, normalize_cache_image, write_json, write_stage_cache_checkpoint
+from .cache import AsyncWritePipeline, chunked, normalize_cache_image, write_json, write_stage_cache_checkpoint
 
 
 def run_mask_single_outputs(executor, processor, original_batch):
@@ -131,6 +131,7 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
     processor = mask_mgr.processors[0]
     processed_tasks = 0
     task_batch_size = max(1, min(128, memory_plan["mask_batch_size"]))
+    cache_writer = AsyncWritePipeline("mask_cache_write")
     try:
         for pack_data in executor.iter_detect_packs(detect_dir):
             pack_tasks = flatten_pack_tasks(executor, pack_data)
@@ -205,7 +206,7 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
                     pack_cache_dirty = True
                     processed_tasks += len(task_batch)
                 if pack_cache_dirty:
-                    executor.write_stage_cache_map(pack_cache_path, pack_cache)
+                    cache_writer.submit(executor.write_stage_cache_map, pack_cache_path, pack_cache)
                 continue
 
             frame_lookup = {frame_meta["frame_number"]: frame_meta for frame_meta in pack_data["frames"]}
@@ -268,8 +269,9 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
                 pack_cache_dirty = True
                 processed_tasks += len(task_batch)
             if pack_cache_dirty:
-                executor.write_stage_cache_map(pack_cache_path, pack_cache)
+                cache_writer.submit(executor.write_stage_cache_map, pack_cache_path, pack_cache)
     finally:
+        cache_writer.close()
         mask_mgr.release_resources()
     stages["mask"] = True
     write_json(mask_dir.parent / "manifest.json", manifest)

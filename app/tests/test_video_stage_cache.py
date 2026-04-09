@@ -5,6 +5,7 @@ import pytest
 import roop.config.globals
 
 from roop.pipeline.staged_executor.cache import read_cache_blob, read_stage_cache_map, write_cache_blob
+from roop.pipeline.staged_executor.cache import AsyncWritePipeline
 from roop.pipeline.staged_executor.video_cache import VideoStageCache
 
 
@@ -120,3 +121,23 @@ def test_video_stage_cache_auto_gpu_fallback_retries_with_cpu(monkeypatch, tmp_p
 
     assert attempts == ["h264_nvenc", "libx264"]
     assert video_path.exists()
+
+
+def test_async_write_pipeline_runs_callback_after_flush():
+    pipeline = AsyncWritePipeline("test_cache_write")
+    events = []
+
+    def write_op():
+        events.append("write")
+
+    def on_complete():
+        events.append("done")
+
+    try:
+        pipeline.submit(write_op, on_complete=on_complete)
+        assert "done" not in events
+        pipeline.flush()
+    finally:
+        pipeline.close()
+
+    assert events == ["write", "done"]
