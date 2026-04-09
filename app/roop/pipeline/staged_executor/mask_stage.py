@@ -65,6 +65,7 @@ def process_full_mask_batch(
     processed_tasks,
     task_count,
     memory_plan,
+    computed_tasks=0,
     flush_cache=True,
 ):
     if getattr(processor, "supports_batch", False):
@@ -97,6 +98,8 @@ def process_full_mask_batch(
         step_completed=processed_tasks + len(task_batch),
         step_total=task_count,
         step_unit="faces",
+        rate_completed=computed_tasks + len(task_batch),
+        rate_total=max(task_count - (processed_tasks - computed_tasks), computed_tasks + len(task_batch)),
     )
 
 
@@ -123,13 +126,14 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
         for pack_data in executor.iter_detect_packs(detect_dir):
             cached += executor.count_stage_cache_entries(executor.get_stage_pack_path(mask_dir, pack_data["start_sequence"], pack_data["end_sequence"]))
         if cached >= task_count:
-            executor.update_progress("mask", detail="Reusing mask cache", step_completed=task_count, step_total=task_count, step_unit="faces", force_log=True)
+            executor.update_progress("mask", detail="Reusing mask cache", step_completed=task_count, step_total=task_count, step_unit="faces", rate_enabled=False, force_log=True)
             return
 
     mask_mgr = ProcessMgr(None)
     mask_mgr.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, executor.build_stage_options([executor.mask_name]))
     processor = mask_mgr.processors[0]
     processed_tasks = 0
+    computed_tasks = 0
     task_batch_size = max(1, min(128, memory_plan["mask_batch_size"]))
     cache_writer = AsyncWritePipeline("mask_cache_write")
     try:
@@ -150,7 +154,7 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
             pack_cache = executor.read_stage_cache_map(pack_cache_path)
             if len(pack_cache) >= len(pack_tasks):
                 processed_tasks += len(pack_tasks)
-                executor.update_progress("mask", detail="Reusing packed mask cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces")
+                executor.update_progress("mask", detail="Reusing packed mask cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces", rate_enabled=False)
                 continue
 
             if source_cache and len(source_cache) >= len(pack_tasks):
@@ -161,7 +165,7 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
                 for _frame_meta, task_meta in pack_tasks:
                     if task_meta["cache_key"] in pack_cache:
                         processed_tasks += 1
-                        executor.update_progress("mask", detail="Reusing packed mask cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces")
+                        executor.update_progress("mask", detail="Reusing packed mask cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces", rate_enabled=False)
                         continue
                     task_batch.append(dict(task_meta))
                     original_batch.append(np.ascontiguousarray(source_cache[task_meta["cache_key"]]))
@@ -178,9 +182,11 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
                             processed_tasks,
                             task_count,
                             memory_plan,
+                            computed_tasks=computed_tasks,
                             flush_cache=False,
                         )
                         pack_cache_dirty = True
+                        computed_tasks += len(task_batch)
                         processed_tasks += len(task_batch)
                         pending_checkpoint_tasks += len(task_batch)
                         if pending_checkpoint_tasks >= checkpoint_interval:
@@ -201,9 +207,11 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
                         processed_tasks,
                         task_count,
                         memory_plan,
+                        computed_tasks=computed_tasks,
                         flush_cache=False,
                     )
                     pack_cache_dirty = True
+                    computed_tasks += len(task_batch)
                     processed_tasks += len(task_batch)
                 if pack_cache_dirty:
                     cache_writer.submit(executor.write_stage_cache_map, pack_cache_path, pack_cache)
@@ -224,7 +232,7 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
                 for task_meta in frame_meta["tasks"]:
                     if task_meta["cache_key"] in pack_cache:
                         processed_tasks += 1
-                        executor.update_progress("mask", detail="Reusing packed mask cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces")
+                        executor.update_progress("mask", detail="Reusing packed mask cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces", rate_enabled=False)
                         continue
                     task_batch.append(dict(task_meta))
                     original_batch.append(mask_mgr.rebuild_aligned_frame(frame, task_meta))
@@ -241,9 +249,11 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
                             processed_tasks,
                             task_count,
                             memory_plan,
+                            computed_tasks=computed_tasks,
                             flush_cache=False,
                         )
                         pack_cache_dirty = True
+                        computed_tasks += len(task_batch)
                         processed_tasks += len(task_batch)
                         pending_checkpoint_tasks += len(task_batch)
                         if pending_checkpoint_tasks >= checkpoint_interval:
@@ -264,9 +274,11 @@ def ensure_full_mask_stage(executor, entry, endframe, detect_dir, swap_dir, mask
                     processed_tasks,
                     task_count,
                     memory_plan,
+                    computed_tasks=computed_tasks,
                     flush_cache=False,
                 )
                 pack_cache_dirty = True
+                computed_tasks += len(task_batch)
                 processed_tasks += len(task_batch)
             if pack_cache_dirty:
                 cache_writer.submit(executor.write_stage_cache_map, pack_cache_path, pack_cache)
@@ -289,7 +301,7 @@ def ensure_mask_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
     if chunk_state["stages"]["mask"] or len(mask_cache) >= total_tasks:
         chunk_state["stages"]["mask"] = True
         if total_tasks > 0:
-            executor.update_progress("mask", detail="Reusing mask cache", step_completed=total_tasks, step_total=total_tasks, step_unit="faces")
+            executor.update_progress("mask", detail="Reusing mask cache", step_completed=total_tasks, step_total=total_tasks, step_unit="faces", rate_enabled=False)
         return
     input_cache_path = executor.get_stage_cache_path(chunk_dir / "swap")
     input_cache = executor.read_stage_cache_map(input_cache_path)
@@ -300,6 +312,7 @@ def ensure_mask_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
     mask_mgr.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, executor.build_stage_options([executor.mask_name]))
     processor = mask_mgr.processors[0]
     processed_tasks = 0
+    computed_tasks = 0
     task_batch = []
     original_batch = []
     task_batch_size = max(1, min(128, memory_plan["mask_batch_size"]))
@@ -312,7 +325,7 @@ def ensure_mask_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
                 pending = [dict(task_meta) for _, task_meta in task_batch_meta if task_meta["cache_key"] not in mask_cache]
                 if not pending:
                     processed_tasks += len(task_batch_meta)
-                    executor.update_progress("mask", detail="Reusing packed masks", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
+                    executor.update_progress("mask", detail="Reusing packed masks", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces", rate_enabled=False)
                     continue
                 original_batch = build_source_aligned_batch(source_cache, pending)
                 if original_batch is None:
@@ -329,9 +342,11 @@ def ensure_mask_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
                     processed_tasks,
                     total_tasks,
                     memory_plan,
+                    computed_tasks=computed_tasks,
                     flush_cache=False,
                 )
                 cache_dirty = True
+                computed_tasks += len(pending)
                 processed_tasks += len(task_batch_meta)
                 pending_checkpoint_tasks += len(pending)
                 if pending_checkpoint_tasks >= checkpoint_interval:
@@ -348,7 +363,7 @@ def ensure_mask_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
             for task_meta in frame_meta["tasks"]:
                 if task_meta["cache_key"] in mask_cache:
                     processed_tasks += 1
-                    executor.update_progress("mask", detail="Reusing packed masks", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
+                    executor.update_progress("mask", detail="Reusing packed masks", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces", rate_enabled=False)
                     continue
                 task_batch.append(dict(task_meta))
                 original_batch.append(mask_mgr.rebuild_aligned_frame(frame, task_meta))
@@ -365,9 +380,11 @@ def ensure_mask_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
                         processed_tasks,
                         total_tasks,
                         memory_plan,
+                        computed_tasks=computed_tasks,
                         flush_cache=False,
                     )
                     cache_dirty = True
+                    computed_tasks += len(task_batch)
                     processed_tasks += len(task_batch)
                     pending_checkpoint_tasks += len(task_batch)
                     if pending_checkpoint_tasks >= checkpoint_interval:
@@ -388,9 +405,11 @@ def ensure_mask_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
                 processed_tasks,
                 total_tasks,
                 memory_plan,
+                computed_tasks=computed_tasks,
                 flush_cache=False,
             )
             cache_dirty = True
+            computed_tasks += len(task_batch)
             processed_tasks += len(task_batch)
         if cache_dirty:
             executor.write_stage_cache_map(cache_path, mask_cache)

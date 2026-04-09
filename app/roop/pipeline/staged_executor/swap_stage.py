@@ -30,13 +30,14 @@ def ensure_full_swap_stage(executor, entry, endframe, detect_dir, swap_dir, task
         for pack_data in executor.iter_detect_packs(detect_dir):
             cached += executor.count_stage_cache_entries(executor.get_stage_pack_path(swap_dir, pack_data["start_sequence"], pack_data["end_sequence"]))
         if cached >= task_count:
-            executor.update_progress("swap", detail="Reusing swap cache", step_completed=task_count, step_total=task_count, step_unit="faces", force_log=True)
+            executor.update_progress("swap", detail="Reusing swap cache", step_completed=task_count, step_total=task_count, step_unit="faces", rate_enabled=False, force_log=True)
             return
 
     swap_mgr = ProcessMgr(None)
     swap_mgr.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, executor.build_stage_options(["faceswap"]))
     processor = swap_mgr.processors[0]
     processed_tasks = 0
+    computed_tasks = 0
     task_batch_size = get_swap_task_batch_size(executor, memory_plan)
     source_cache_dir = get_swap_source_stage_dir(swap_dir) if executor.mask_name is not None else None
     cache_writer = AsyncWritePipeline("swap_cache_write")
@@ -62,7 +63,7 @@ def ensure_full_swap_stage(executor, entry, endframe, detect_dir, swap_dir, task
                 source_cache_path is None or len(source_pack_cache) >= len(pack_tasks)
             ):
                 processed_tasks += len(pack_tasks)
-                executor.update_progress("swap", detail="Reusing packed swap cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces")
+                executor.update_progress("swap", detail="Reusing packed swap cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces", rate_enabled=False)
                 continue
 
             frame_lookup = {frame_meta["frame_number"]: frame_meta for frame_meta in pack_data["frames"]}
@@ -79,7 +80,7 @@ def ensure_full_swap_stage(executor, entry, endframe, detect_dir, swap_dir, task
                 for task_meta in frame_meta["tasks"]:
                     if task_meta["cache_key"] in pack_cache:
                         processed_tasks += 1
-                        executor.update_progress("swap", detail="Reusing packed swap cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces")
+                        executor.update_progress("swap", detail="Reusing packed swap cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces", rate_enabled=False)
                         continue
                     task = dict(task_meta)
                     task["aligned_frame"] = swap_mgr.rebuild_aligned_frame(frame, task_meta)
@@ -92,9 +93,10 @@ def ensure_full_swap_stage(executor, entry, endframe, detect_dir, swap_dir, task
                         for cache_key, fake_frame in batch_outputs.items():
                             pack_cache[cache_key] = normalize_cache_image(fake_frame)
                         pack_cache_dirty = True
+                        computed_tasks += len(task_batch)
                         processed_tasks += len(task_batch)
                         pending_checkpoint_tasks += len(task_batch)
-                        executor.update_progress("swap", detail="Streaming source decode + batched face swap", step_completed=processed_tasks, step_total=task_count, step_unit="faces")
+                        executor.update_progress("swap", detail="Streaming source decode + batched face swap", step_completed=processed_tasks, step_total=task_count, step_unit="faces", rate_completed=computed_tasks, rate_total=max(task_count - (processed_tasks - computed_tasks), computed_tasks))
                         if pending_checkpoint_tasks >= checkpoint_interval:
                             write_stage_cache_checkpoint(pack_cache_path, pack_cache)
                             if source_cache_path is not None:
@@ -109,8 +111,9 @@ def ensure_full_swap_stage(executor, entry, endframe, detect_dir, swap_dir, task
                 for cache_key, fake_frame in batch_outputs.items():
                     pack_cache[cache_key] = normalize_cache_image(fake_frame)
                 pack_cache_dirty = True
+                computed_tasks += len(task_batch)
                 processed_tasks += len(task_batch)
-                executor.update_progress("swap", detail="Streaming source decode + batched face swap", step_completed=processed_tasks, step_total=task_count, step_unit="faces")
+                executor.update_progress("swap", detail="Streaming source decode + batched face swap", step_completed=processed_tasks, step_total=task_count, step_unit="faces", rate_completed=computed_tasks, rate_total=max(task_count - (processed_tasks - computed_tasks), computed_tasks))
             if pack_cache_dirty:
                 entries = [(pack_cache_path, pack_cache)]
                 if source_cache_path is not None:
@@ -135,13 +138,14 @@ def ensure_swap_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
     if chunk_state["stages"]["swap"] or len(swap_cache) >= total_tasks:
         chunk_state["stages"]["swap"] = True
         if total_tasks > 0:
-            executor.update_progress("swap", detail="Reusing swap cache", step_completed=total_tasks, step_total=total_tasks, step_unit="faces")
+            executor.update_progress("swap", detail="Reusing swap cache", step_completed=total_tasks, step_total=total_tasks, step_unit="faces", rate_enabled=False)
         return
     swap_dir.mkdir(parents=True, exist_ok=True)
     swap_mgr = ProcessMgr(None)
     swap_mgr.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, executor.build_stage_options(["faceswap"]))
     processor = swap_mgr.processors[0]
     processed_tasks = 0
+    computed_tasks = 0
     task_batch = []
     task_batch_size = get_swap_task_batch_size(executor, memory_plan)
     cache_dirty = False
@@ -161,7 +165,7 @@ def ensure_swap_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
                     source_cache is None or task_meta["cache_key"] in source_cache
                 ):
                     processed_tasks += 1
-                    executor.update_progress("swap", detail="Reusing packed swap cache", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
+                    executor.update_progress("swap", detail="Reusing packed swap cache", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces", rate_enabled=False)
                     continue
                 task = dict(task_meta)
                 task["aligned_frame"] = swap_mgr.rebuild_aligned_frame(frame, task_meta)
@@ -174,9 +178,10 @@ def ensure_swap_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
                     for cache_key, fake_frame in batch_outputs.items():
                         swap_cache[cache_key] = normalize_cache_image(fake_frame)
                     cache_dirty = True
+                    computed_tasks += len(task_batch)
                     processed_tasks += len(task_batch)
                     pending_checkpoint_tasks += len(task_batch)
-                    executor.update_progress("swap", detail="Streaming source decode + batched face swap", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
+                    executor.update_progress("swap", detail="Streaming source decode + batched face swap", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces", rate_completed=computed_tasks, rate_total=max(total_tasks - (processed_tasks - computed_tasks), computed_tasks))
                     if pending_checkpoint_tasks >= checkpoint_interval:
                         write_stage_cache_checkpoint(cache_path, swap_cache)
                         if source_cache_path is not None:
@@ -191,8 +196,9 @@ def ensure_swap_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_plan,
             for cache_key, fake_frame in batch_outputs.items():
                 swap_cache[cache_key] = normalize_cache_image(fake_frame)
             cache_dirty = True
+            computed_tasks += len(task_batch)
             processed_tasks += len(task_batch)
-            executor.update_progress("swap", detail="Streaming source decode + batched face swap", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
+            executor.update_progress("swap", detail="Streaming source decode + batched face swap", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces", rate_completed=computed_tasks, rate_total=max(total_tasks - (processed_tasks - computed_tasks), computed_tasks))
         if cache_dirty:
             executor.write_stage_cache_map(cache_path, swap_cache)
             if source_cache_path is not None:

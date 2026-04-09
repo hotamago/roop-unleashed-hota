@@ -5,6 +5,7 @@ from roop.progress.status import (
     publish_processing_progress,
     reset_processing_status,
     set_processing_message,
+    update_rate_window,
 )
 
 
@@ -47,4 +48,17 @@ def test_set_processing_message_preserves_pipeline_steps_when_stage_changes():
     assert state["total_steps"] == 6
     assert state["stage"] == "detect"
     assert "Pipeline: 1/6" in get_processing_status_line()
+
+
+def test_update_rate_window_prefers_recent_samples():
+    class Holder:
+        pass
+
+    holder = Holder()
+    assert update_rate_window(holder, 0, now=0.0) is None
+    assert update_rate_window(holder, 60, now=60.0) == 1.0
+
+    recent_rate = update_rate_window(holder, 120, now=90.0)
+
+    assert recent_rate == 2.0
 

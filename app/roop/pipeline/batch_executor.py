@@ -30,7 +30,7 @@ from roop.media.video_io import open_video_capture, resolve_video_writer_config
 from roop.pipeline.face_serializer import deserialize_face as deserialize_face_payload
 from roop.pipeline.face_serializer import serialize_face as serialize_face_payload
 import roop.config.globals
-from roop.progress.status import format_duration, get_processing_status_line, publish_processing_progress
+from roop.progress.status import format_duration, get_processing_status_line, publish_processing_progress, update_rate_window
 
 
 
@@ -1049,9 +1049,7 @@ class ProcessMgr():
         memory_usage = process.memory_info().rss / 1024 / 1024 / 1024
         progress.update(1)
         elapsed = progress.format_dict.get("elapsed")
-        rate = progress.format_dict.get("rate")
-        if (rate is None or rate <= 0) and elapsed and progress.n > 0:
-            rate = progress.n / max(elapsed, 1e-9)
+        rate = update_rate_window(self, progress.n)
         eta = None
         if rate is not None and rate > 0 and self.total_frames > 0:
             eta = max(self.total_frames - progress.n, 0) / rate
@@ -1090,6 +1088,7 @@ class ProcessMgr():
         self.progress_file_total = total_files
         self.progress_unit = unit
         self.progress_started_at = time.time()
+        self._rate_samples = None
 
 
     def process_frame(self, frame:Frame):

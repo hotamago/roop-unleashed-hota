@@ -2,6 +2,7 @@
 import os
 import time
 
+from collections import deque
 import roop.config.globals
 
 
@@ -24,6 +25,7 @@ def _default_state():
         "step_total": None,
         "step_unit": None,
         "rate": None,
+        "rate_label": None,
         "rate_unit": None,
         "eta": None,
         "elapsed": 0.0,
@@ -78,6 +80,58 @@ def _format_progress_value(completed, total, unit):
     return None
 
 
+def update_rate_window(holder, completed, now=None, window_seconds=60.0, max_samples=240, min_sample_delta=0.25):
+    if not _is_number(completed):
+        return None
+    if now is None:
+        now = time.time()
+    completed_value = float(completed)
+    if completed_value < 0:
+        return None
+
+    samples = getattr(holder, "_rate_samples", None)
+    if samples is None:
+        samples = deque()
+        setattr(holder, "_rate_samples", samples)
+
+    if samples:
+        last_time, last_completed = samples[-1]
+        if completed_value < last_completed:
+            samples.clear()
+        elif completed_value == last_completed:
+            while samples and (now - samples[0][0]) > window_seconds:
+                samples.popleft()
+            if len(samples) >= 2:
+                oldest_time, oldest_completed = samples[0]
+                elapsed = max(now - oldest_time, 0.0)
+                progressed = max(completed_value - oldest_completed, 0.0)
+                if elapsed > 0 and progressed > 0:
+                    return progressed / elapsed
+            return None
+        elif (now - last_time) < min_sample_delta:
+            samples[-1] = (now, completed_value)
+        else:
+            samples.append((now, completed_value))
+    else:
+        samples.append((now, completed_value))
+
+    while len(samples) > max_samples:
+        samples.popleft()
+    while samples and (now - samples[0][0]) > window_seconds:
+        samples.popleft()
+
+    if len(samples) < 2:
+        return None
+
+    oldest_time, oldest_completed = samples[0]
+    newest_time, newest_completed = samples[-1]
+    elapsed = max(newest_time - oldest_time, 0.0)
+    progressed = max(newest_completed - oldest_completed, 0.0)
+    if elapsed <= 0 or progressed <= 0:
+        return None
+    return progressed / elapsed
+
+
 def render_status_line(state):
     message = state.get("message") or state.get("status", "idle").title()
     parts = [message]
@@ -121,7 +175,11 @@ def render_status_line(state):
 
     rate = state.get("rate")
     if _is_number(rate) and rate > 0:
-        parts.append(f"Speed: {rate:.2f} {state.get('rate_unit') or state.get('unit', 'units')}/s")
+        rate_label = state.get("rate_label")
+        if rate_label:
+            parts.append(f"Speed ({rate_label}): {rate:.2f} {state.get('rate_unit') or state.get('unit', 'units')}/s")
+        else:
+            parts.append(f"Speed: {rate:.2f} {state.get('rate_unit') or state.get('unit', 'units')}/s")
 
     eta = state.get("eta")
     if _is_number(eta) and eta >= 0:
@@ -181,7 +239,11 @@ def render_status_markdown(state):
 
     rate = state.get("rate")
     if _is_number(rate) and rate > 0:
-        lines.append(f"- Speed: {rate:.2f} {state.get('rate_unit') or state.get('unit', 'units')}/s")
+        rate_label = state.get("rate_label")
+        if rate_label:
+            lines.append(f"- Speed ({rate_label}): {rate:.2f} {state.get('rate_unit') or state.get('unit', 'units')}/s")
+        else:
+            lines.append(f"- Speed: {rate:.2f} {state.get('rate_unit') or state.get('unit', 'units')}/s")
 
     eta = state.get("eta")
     if _is_number(eta) and eta >= 0:
@@ -284,7 +346,7 @@ def set_memory_status(memory_status):
     return _apply_state(state, force_log=False)
 
 
-def publish_processing_progress(stage=None, completed=None, total=None, unit=None, target_name=None, file_index=None, total_files=None, chunk_index=None, total_chunks=None, current_step=None, total_steps=None, step_completed=None, step_total=None, step_unit=None, rate=None, rate_unit=None, elapsed=None, eta=None, detail=None, memory_status=None, force_log=False):
+def publish_processing_progress(stage=None, completed=None, total=None, unit=None, target_name=None, file_index=None, total_files=None, chunk_index=None, total_chunks=None, current_step=None, total_steps=None, step_completed=None, step_total=None, step_unit=None, rate=None, rate_label=None, rate_unit=None, elapsed=None, eta=None, detail=None, memory_status=None, force_log=False):
     state = _ensure_state()
     now = time.time()
 
@@ -320,8 +382,14 @@ def publish_processing_progress(stage=None, completed=None, total=None, unit=Non
         state["step_total"] = step_total
     if step_unit is not None:
         state["step_unit"] = step_unit
+    if rate_label is not None:
+        state["rate_label"] = rate_label
+    elif rate is None:
+        state["rate_label"] = None
     if rate_unit is not None:
         state["rate_unit"] = rate_unit
+    elif rate is None:
+        state["rate_unit"] = None
     if detail is not None:
         state["detail"] = detail
     if memory_status is not None:

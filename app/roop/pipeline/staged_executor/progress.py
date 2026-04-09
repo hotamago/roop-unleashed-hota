@@ -2,7 +2,7 @@ import time
 
 import roop.config.globals
 import roop.utils as util
-from roop.progress.status import get_processing_status_line, publish_processing_progress
+from roop.progress.status import get_processing_status_line, publish_processing_progress, update_rate_window
 
 
 def get_pipeline_steps(executor):
@@ -35,19 +35,45 @@ def get_stage_step_info(executor, stage):
     return steps.index(stage_key) + 1, len(steps)
 
 
-def update_progress(executor, stage, detail=None, step_completed=None, step_total=None, step_unit="items", force_log=False):
+def update_progress(
+    executor,
+    stage,
+    detail=None,
+    step_completed=None,
+    step_total=None,
+    step_unit="items",
+    force_log=False,
+    rate_completed=None,
+    rate_total=None,
+    rate_unit=None,
+    rate_label="processing",
+    rate_enabled=None,
+):
     if stage != executor.current_stage or step_completed in (None, 0):
         executor.current_stage = stage
         executor.stage_started_at = time.time()
+        executor.rate_phase = None
+        executor._rate_samples = None
     stage_elapsed = None
     stage_rate = None
     stage_eta = None
     if executor.stage_started_at is not None:
         stage_elapsed = max(time.time() - executor.stage_started_at, 0.0)
-    if step_completed is not None and step_completed > 0 and stage_elapsed and stage_elapsed > 0:
-        stage_rate = step_completed / stage_elapsed
-    if stage_rate is not None and step_total is not None and step_total > 0:
-        stage_eta = max(step_total - step_completed, 0) / stage_rate
+    if rate_enabled is None:
+        rate_enabled = step_completed is not None and step_completed > 0
+    if rate_enabled:
+        rate_phase = rate_label or "processing"
+        if getattr(executor, "rate_phase", None) != rate_phase or getattr(executor, "rate_started_at", None) is None:
+            executor.rate_phase = rate_phase
+            executor._rate_samples = None
+        rate_completed_value = rate_completed if rate_completed is not None else step_completed
+        rate_total_value = rate_total if rate_total is not None else step_total
+        stage_rate = update_rate_window(executor, rate_completed_value)
+        if stage_rate is not None and rate_total_value is not None and rate_total_value > 0:
+            stage_eta = max(rate_total_value - rate_completed_value, 0) / stage_rate
+    else:
+        executor.rate_phase = None
+        executor._rate_samples = None
     target_name = None
     if executor.current_entry is not None:
         target_name = executor.current_entry.filename
@@ -68,7 +94,8 @@ def update_progress(executor, stage, detail=None, step_completed=None, step_tota
         step_total=step_total,
         step_unit=step_unit,
         rate=stage_rate,
-        rate_unit=step_unit,
+        rate_label=rate_label if stage_rate is not None else None,
+        rate_unit=rate_unit or step_unit,
         elapsed=stage_elapsed,
         eta=stage_eta,
         detail=detail,

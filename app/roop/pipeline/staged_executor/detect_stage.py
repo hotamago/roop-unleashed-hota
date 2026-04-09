@@ -113,13 +113,14 @@ def append_detect_window_frames(
     entry,
     frame_count,
     processed_frames,
+    computed_frames,
     total_tasks,
     frames_since_checkpoint,
     checkpoint_interval,
     memory_plan,
 ):
     if not window_items:
-        return processed_frames, total_tasks, frames_since_checkpoint
+        return processed_frames, computed_frames, total_tasks, frames_since_checkpoint
     frame_plans = build_detect_frame_plans(planner, [frame for _, _, frame in window_items], memory_plan)
     for (seq_index, frame_number, _frame), frame_plan in zip(window_items, frame_plans):
         frame_meta = {
@@ -136,6 +137,7 @@ def append_detect_window_frames(
         pack_frames.append(frame_meta)
         total_tasks += len(frame_meta["tasks"])
         processed_frames += 1
+        computed_frames += 1
         frames_since_checkpoint += 1
         executor.update_progress(
             "detect",
@@ -143,11 +145,13 @@ def append_detect_window_frames(
             step_completed=processed_frames,
             step_total=frame_count,
             step_unit="frames",
+            rate_completed=computed_frames,
+            rate_total=frame_count,
         )
         if frames_since_checkpoint >= checkpoint_interval:
             write_cache_blob(pack_path, pack_data)
             frames_since_checkpoint = 0
-    return processed_frames, total_tasks, frames_since_checkpoint
+    return processed_frames, computed_frames, total_tasks, frames_since_checkpoint
 
 
 def ensure_full_detect_stage(executor, entry, endframe, detect_dir, stages, manifest, memory_plan):
@@ -165,12 +169,14 @@ def ensure_full_detect_stage(executor, entry, endframe, detect_dir, stages, mani
                 step_completed=frame_count,
                 step_total=frame_count,
                 step_unit="frames",
+                rate_enabled=False,
                 force_log=True,
             )
             return task_count
     planner = ProcessMgr(None)
     planner.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, executor.build_stage_options([]))
     processed_frames = 0
+    computed_frames = 0
     total_tasks = 0
     try:
         for pack_start, pack_end in executor.iter_detect_pack_ranges(frame_count):
@@ -190,6 +196,7 @@ def ensure_full_detect_stage(executor, entry, endframe, detect_dir, stages, mani
                         step_completed=processed_frames,
                         step_total=frame_count,
                         step_unit="frames",
+                        rate_enabled=False,
                     )
                     continue
                 executor.update_progress(
@@ -198,6 +205,7 @@ def ensure_full_detect_stage(executor, entry, endframe, detect_dir, stages, mani
                     step_completed=processed_frames,
                     step_total=frame_count,
                     step_unit="frames",
+                    rate_enabled=False,
                 )
             else:
                 pack_data = {
@@ -217,7 +225,7 @@ def ensure_full_detect_stage(executor, entry, endframe, detect_dir, stages, mani
                 seq_index = (frame_number - entry.startframe) + 1
                 frame_window.append((seq_index, frame_number, frame))
                 if len(frame_window) >= detect_window_size:
-                    processed_frames, total_tasks, frames_since_checkpoint = append_detect_window_frames(
+                    processed_frames, computed_frames, total_tasks, frames_since_checkpoint = append_detect_window_frames(
                         executor,
                         planner,
                         frame_window,
@@ -227,6 +235,7 @@ def ensure_full_detect_stage(executor, entry, endframe, detect_dir, stages, mani
                         entry,
                         frame_count,
                         processed_frames,
+                        computed_frames,
                         total_tasks,
                         frames_since_checkpoint,
                         checkpoint_interval,
@@ -234,7 +243,7 @@ def ensure_full_detect_stage(executor, entry, endframe, detect_dir, stages, mani
                     )
                     frame_window = []
             if frame_window:
-                processed_frames, total_tasks, frames_since_checkpoint = append_detect_window_frames(
+                processed_frames, computed_frames, total_tasks, frames_since_checkpoint = append_detect_window_frames(
                     executor,
                     planner,
                     frame_window,
@@ -244,6 +253,7 @@ def ensure_full_detect_stage(executor, entry, endframe, detect_dir, stages, mani
                     entry,
                     frame_count,
                     processed_frames,
+                    computed_frames,
                     total_tasks,
                     frames_since_checkpoint,
                     checkpoint_interval,
@@ -268,7 +278,7 @@ def ensure_detect_cache(executor, job_dir, detect_dir, image, frame_number):
     detect_dir.mkdir(parents=True, exist_ok=True)
     plan_path = detect_dir / "plan.bin"
     if plan_path.exists():
-        executor.update_progress("detect", detail="Reusing cached detect plan", step_completed=1, step_total=1, step_unit="image")
+        executor.update_progress("detect", detail="Reusing cached detect plan", step_completed=1, step_total=1, step_unit="image", rate_enabled=False)
         return read_cache_blob(plan_path)
     planner = ProcessMgr(None)
     planner.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, executor.build_stage_options([]))
@@ -292,7 +302,7 @@ def ensure_chunk_detect(executor, video_path, chunk_dir, chunk_start, chunk_end,
     if plan_path.exists():
         chunk_state["stages"]["detect"] = True
         frame_total = max(chunk_end - chunk_start, 1)
-        executor.update_progress("detect", detail="Reusing detect cache", step_completed=frame_total, step_total=frame_total, step_unit="frames")
+        executor.update_progress("detect", detail="Reusing detect cache", step_completed=frame_total, step_total=frame_total, step_unit="frames", rate_enabled=False)
         return read_cache_blob(plan_path)
 
     chunk_dir.mkdir(parents=True, exist_ok=True)
@@ -300,6 +310,7 @@ def ensure_chunk_detect(executor, video_path, chunk_dir, chunk_start, chunk_end,
     planner.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, executor.build_stage_options([]))
     chunk_meta = {"start": chunk_start, "end": chunk_end, "frames": []}
     processed_frames = 0
+    computed_frames = 0
     total_frames = max(chunk_end - chunk_start, 1)
     try:
         frame_window = []
@@ -318,7 +329,8 @@ def ensure_chunk_detect(executor, video_path, chunk_dir, chunk_start, chunk_end,
                         frame_meta["tasks"].append(task_meta)
                     chunk_meta["frames"].append(frame_meta)
                     processed_frames += 1
-                    executor.update_progress("detect", detail="Detecting and aligning faces", step_completed=processed_frames, step_total=total_frames, step_unit="frames")
+                    computed_frames += 1
+                    executor.update_progress("detect", detail="Detecting and aligning faces", step_completed=processed_frames, step_total=total_frames, step_unit="frames", rate_completed=computed_frames, rate_total=total_frames)
                 frame_window = []
         if frame_window:
             frame_numbers = [item[0] for item in frame_window]
@@ -332,7 +344,8 @@ def ensure_chunk_detect(executor, video_path, chunk_dir, chunk_start, chunk_end,
                     frame_meta["tasks"].append(task_meta)
                 chunk_meta["frames"].append(frame_meta)
                 processed_frames += 1
-                executor.update_progress("detect", detail="Detecting and aligning faces", step_completed=processed_frames, step_total=total_frames, step_unit="frames")
+                computed_frames += 1
+                executor.update_progress("detect", detail="Detecting and aligning faces", step_completed=processed_frames, step_total=total_frames, step_unit="frames", rate_completed=computed_frames, rate_total=total_frames)
     finally:
         planner.release_resources()
     write_cache_blob(plan_path, chunk_meta)

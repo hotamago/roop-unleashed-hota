@@ -175,7 +175,7 @@ def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_d
 
     if stages["composite"] and intermediate_video.exists() and completed_frames >= frame_count:
         executor.completed_units += frame_count
-        executor.update_progress("composite", detail="Reusing encoded composite video cache", step_completed=frame_count, step_total=frame_count, step_unit="frames", force_log=True)
+        executor.update_progress("composite", detail="Reusing encoded composite video cache", step_completed=frame_count, step_total=frame_count, step_unit="frames", rate_enabled=False, force_log=True)
         return
 
     intermediate_video.unlink(missing_ok=True)
@@ -208,6 +208,8 @@ def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_d
     fallback_mgr = None
     last_result_frame = None
     processed_frames = completed_frames
+    initial_completed_frames = completed_frames
+    computed_frames = 0
     last_progress_emit_at = 0.0
     progress_emit_frames = 8
     cap = open_video_capture(entry.filename)
@@ -254,7 +256,7 @@ def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_d
                     if (now - last_progress_emit_at) < 0.25:
                         return
             last_progress_emit_at = time.time()
-            executor.update_progress("composite", detail=get_composite_progress_detail(), step_completed=processed_frames, step_total=frame_count, step_unit="frames")
+            executor.update_progress("composite", detail=get_composite_progress_detail(), step_completed=processed_frames, step_total=frame_count, step_unit="frames", rate_completed=computed_frames, rate_total=max(frame_count - initial_completed_frames, computed_frames))
 
         def cache_last_result_frame(result):
             nonlocal last_result_frame, fallback_mgr
@@ -281,7 +283,7 @@ def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_d
             segment_frame_count = len(pack_data.get("frames", []))
             if segment_path.exists() and segment_state.get("completed"):
                 executor.completed_units += segment_frame_count
-                emit_progress(force=True)
+                executor.update_progress("composite", detail="Reusing encoded composite segment cache", step_completed=processed_frames, step_total=frame_count, step_unit="frames", rate_enabled=False, force_log=True)
                 continue
 
             segment_path.unlink(missing_ok=True)
@@ -308,7 +310,7 @@ def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_d
             checkpoint_completed_frames = processed_frames
 
             def write_composed_frames(results):
-                nonlocal processed_frames, pack_processed_frames
+                nonlocal processed_frames, pack_processed_frames, computed_frames
                 valid_results = [result for result in results if result is not None]
                 if valid_results:
                     write_many = getattr(segment_writer, "write_frames", None)
@@ -320,6 +322,7 @@ def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_d
                 for result in results:
                     executor.completed_units += 1
                     processed_frames += 1
+                    computed_frames += 1
                     pack_processed_frames += 1
                     cache_last_result_frame(result)
                 composite_state["completed_frames"] = processed_frames

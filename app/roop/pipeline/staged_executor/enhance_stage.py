@@ -25,6 +25,7 @@ def process_full_enhance_batch(
     processed_tasks,
     task_count,
     memory_plan,
+    computed_tasks=0,
     flush_cache=True,
 ):
     current_frames = [np.ascontiguousarray(input_cache[task_meta["cache_key"]]) for task_meta in task_batch]
@@ -33,7 +34,7 @@ def process_full_enhance_batch(
         output_cache[task_meta["cache_key"]] = normalize_cache_image(enhanced_frames[task_meta["cache_key"]])
     if flush_cache:
         executor.write_stage_cache_map(output_cache_path, output_cache)
-    executor.update_progress("enhance", detail="Running enhancement stage", step_completed=processed_tasks + len(task_batch), step_total=task_count, step_unit="faces")
+    executor.update_progress("enhance", detail="Running enhancement stage", step_completed=processed_tasks + len(task_batch), step_total=task_count, step_unit="faces", rate_completed=computed_tasks + len(task_batch), rate_total=max(task_count - (processed_tasks - computed_tasks), computed_tasks + len(task_batch)))
 
 
 def ensure_full_enhance_stage(executor, detect_dir, swap_dir, mask_dir, enhance_dir, task_count, stages, manifest, memory_plan):
@@ -47,13 +48,14 @@ def ensure_full_enhance_stage(executor, detect_dir, swap_dir, mask_dir, enhance_
         for pack_data in executor.iter_detect_packs(detect_dir):
             cached += executor.count_stage_cache_entries(executor.get_stage_pack_path(enhance_dir, pack_data["start_sequence"], pack_data["end_sequence"]))
         if cached >= task_count:
-            executor.update_progress("enhance", detail="Reusing enhance cache", step_completed=task_count, step_total=task_count, step_unit="faces", force_log=True)
+            executor.update_progress("enhance", detail="Reusing enhance cache", step_completed=task_count, step_total=task_count, step_unit="faces", rate_enabled=False, force_log=True)
             return
 
     enhance_mgr = ProcessMgr(None)
     enhance_mgr.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, executor.build_stage_options([executor.enhancer_name]))
     processor = enhance_mgr.processors[0]
     processed_tasks = 0
+    computed_tasks = 0
     task_batch_size = get_enhance_task_batch_size(executor, memory_plan)
     cache_writer = AsyncWritePipeline("enhance_cache_write")
     try:
@@ -68,7 +70,7 @@ def ensure_full_enhance_stage(executor, detect_dir, swap_dir, mask_dir, enhance_
             pack_cache = executor.read_stage_cache_map(pack_cache_path)
             if len(pack_cache) >= len(pack_tasks):
                 processed_tasks += len(pack_tasks)
-                executor.update_progress("enhance", detail="Reusing packed enhance cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces")
+                executor.update_progress("enhance", detail="Reusing packed enhance cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces", rate_enabled=False)
                 continue
             task_batch = []
             pack_cache_dirty = False
@@ -76,7 +78,7 @@ def ensure_full_enhance_stage(executor, detect_dir, swap_dir, mask_dir, enhance_
             for _, task_meta in pack_tasks:
                 if task_meta["cache_key"] in pack_cache:
                     processed_tasks += 1
-                    executor.update_progress("enhance", detail="Reusing packed enhance cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces")
+                    executor.update_progress("enhance", detail="Reusing packed enhance cache", step_completed=processed_tasks, step_total=task_count, step_unit="faces", rate_enabled=False)
                     continue
                 task_batch.append(dict(task_meta))
                 if len(task_batch) >= task_batch_size:
@@ -91,9 +93,11 @@ def ensure_full_enhance_stage(executor, detect_dir, swap_dir, mask_dir, enhance_
                         processed_tasks,
                         task_count,
                         memory_plan,
+                        computed_tasks=computed_tasks,
                         flush_cache=False,
                     )
                     pack_cache_dirty = True
+                    computed_tasks += len(task_batch)
                     processed_tasks += len(task_batch)
                     pending_checkpoint_tasks += len(task_batch)
                     if pending_checkpoint_tasks >= checkpoint_interval:
@@ -112,9 +116,11 @@ def ensure_full_enhance_stage(executor, detect_dir, swap_dir, mask_dir, enhance_
                     processed_tasks,
                     task_count,
                     memory_plan,
+                    computed_tasks=computed_tasks,
                     flush_cache=False,
                 )
                 pack_cache_dirty = True
+                computed_tasks += len(task_batch)
                 processed_tasks += len(task_batch)
             if pack_cache_dirty:
                 cache_writer.submit(executor.write_stage_cache_map, pack_cache_path, pack_cache)
@@ -137,7 +143,7 @@ def ensure_enhance_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_pl
     if chunk_state["stages"]["enhance"] or len(enhance_cache) >= total_tasks:
         chunk_state["stages"]["enhance"] = True
         if total_tasks > 0:
-            executor.update_progress("enhance", detail="Reusing enhance cache", step_completed=total_tasks, step_total=total_tasks, step_unit="faces")
+            executor.update_progress("enhance", detail="Reusing enhance cache", step_completed=total_tasks, step_total=total_tasks, step_unit="faces", rate_enabled=False)
         return
     input_cache_path = executor.get_stage_cache_path(chunk_dir / ("mask" if executor.mask_name else "swap"))
     input_cache = executor.read_stage_cache_map(input_cache_path)
@@ -146,6 +152,7 @@ def ensure_enhance_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_pl
     enhance_mgr.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, executor.build_stage_options([executor.enhancer_name]))
     processor = enhance_mgr.processors[0]
     processed_tasks = 0
+    computed_tasks = 0
     task_batch_size = get_enhance_task_batch_size(executor, memory_plan)
     cache_dirty = False
     try:
@@ -155,7 +162,7 @@ def ensure_enhance_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_pl
             pending = [(frame_meta, task_meta) for frame_meta, task_meta in batch if task_meta["cache_key"] not in enhance_cache]
             if not pending:
                 processed_tasks += len(batch)
-                executor.update_progress("enhance", detail="Reusing packed enhance cache", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
+                executor.update_progress("enhance", detail="Reusing packed enhance cache", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces", rate_enabled=False)
                 continue
             task_batch = [task_meta for _, task_meta in pending]
             current_frames = [np.ascontiguousarray(input_cache[task_meta["cache_key"]]) for task_meta in task_batch]
@@ -163,9 +170,10 @@ def ensure_enhance_stage(executor, chunk_dir, chunk_meta, chunk_state, memory_pl
             for task_meta in task_batch:
                 enhance_cache[task_meta["cache_key"]] = normalize_cache_image(enhanced_frames[task_meta["cache_key"]])
             cache_dirty = True
+            computed_tasks += len(task_batch)
             processed_tasks += len(batch)
             pending_checkpoint_tasks += len(task_batch)
-            executor.update_progress("enhance", detail="Running enhancement stage", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces")
+            executor.update_progress("enhance", detail="Running enhancement stage", step_completed=processed_tasks, step_total=total_tasks, step_unit="faces", rate_completed=computed_tasks, rate_total=max(total_tasks - (processed_tasks - computed_tasks), computed_tasks))
             if pending_checkpoint_tasks >= checkpoint_interval:
                 write_stage_cache_checkpoint(cache_path, enhance_cache)
                 pending_checkpoint_tasks = 0
