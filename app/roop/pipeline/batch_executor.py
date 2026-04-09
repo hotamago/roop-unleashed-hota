@@ -661,8 +661,8 @@ class ProcessMgr():
             explicit_workers = active_plan.get("single_batch_workers")
             if explicit_workers is not None:
                 return max(1, int(explicit_workers))
-        worker_count, _, _ = resolve_single_batch_workers(getattr(roop.config.globals.CFG, "single_batch_workers", 1))
-        return max(1, int(worker_count))
+        effective_workers, _, _ = resolve_single_batch_workers(getattr(roop.config.globals.CFG, "single_batch_workers", 1))
+        return max(1, int(effective_workers))
 
 
     def get_single_batch_worker_processors(self, processor, worker_count):
