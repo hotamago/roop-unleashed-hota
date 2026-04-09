@@ -25,15 +25,6 @@ def get_composite_progress_detail():
     return "Streaming source decode + cached face compositing + video encode"
 
 
-def get_compose_gpu_batch_size(executor):
-    requested_workers = getattr(roop.config.globals.CFG, "max_threads", 1)
-    try:
-        resolved = int(requested_workers)
-    except (TypeError, ValueError):
-        resolved = 1
-    return max(1, min(max(resolved, 1) * 2, 8))
-
-
 def get_compose_worker_count(executor):
     requested_workers = getattr(roop.config.globals.CFG, "max_threads", 1)
     try:
@@ -95,6 +86,44 @@ def ensure_direct_video_output(executor, entry, index, frame_count, endframe):
     )
 
 
+def get_composite_segment_dir(intermediate_video):
+    return intermediate_video.parent / "composite_segments"
+
+
+def get_composite_segment_key(pack_data):
+    return f"{int(pack_data['start_sequence']):06d}_{int(pack_data['end_sequence']):06d}"
+
+
+def get_composite_segment_path(intermediate_video, pack_data):
+    return get_composite_segment_dir(intermediate_video) / f"{get_composite_segment_key(pack_data)}.mp4"
+
+
+def read_last_video_frame(video_path):
+    capture = open_video_capture(str(video_path))
+    try:
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if frame_count > 1:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, frame_count - 1)
+        ok, frame = capture.read()
+        if ok and frame is not None:
+            return frame
+        return None
+    finally:
+        capture.release()
+
+
+def create_stage_video_writer(filename, size, fps, codec, crf, ffmpeg_params, quality_args):
+    return FFMPEG_VideoWriter(
+        filename,
+        size,
+        fps,
+        codec=codec,
+        crf=crf,
+        ffmpeg_params=ffmpeg_params,
+        quality_args=quality_args,
+    )
+
+
 def prepare_fallback_mgr(executor, fallback_mgr=None, last_result_frame=None):
     if fallback_mgr is None:
         fallback_mgr = executor.get_fallback_mgr()
@@ -124,75 +153,61 @@ def compose_frame_from_cache(executor, compose_mgr, frame, frame_meta, input_cac
     if frame_meta["fallback"]:
         return resolve_cached_fallback_frame(executor, frame, fallback_mgr, last_result_frame)
 
-    result = frame
+    result = frame.copy()
     for task_meta in frame_meta["tasks"]:
         fake_frame = input_cache[task_meta["cache_key"]]
         enhanced_frame = enhance_cache.get(task_meta["cache_key"]) if executor.enhancer_name is not None else None
         result = compose_mgr.compose_task(result, task_meta, fake_frame, enhanced_frame)
+    if fallback_mgr is not None and result is not None:
+        fallback_mgr.last_swapped_frame = result.copy()
+        fallback_mgr.num_frames_no_face = 0
     return result
-
-
-def compose_frames_from_cache_batch(executor, compose_mgr, frame_entries, input_cache, enhance_cache):
-    if not frame_entries:
-        return []
-    if len(frame_entries) == 1 or not compose_mgr.should_use_gpu_compositor():
-        return [
-            compose_frame_from_cache(executor, compose_mgr, frame, frame_meta, input_cache, enhance_cache)
-            for frame, frame_meta in frame_entries
-        ]
-
-    states = [
-        {
-            "result": frame,
-            "tasks": list(frame_meta.get("tasks", [])),
-        }
-        for frame, frame_meta in frame_entries
-    ]
-    max_tasks = max((len(state["tasks"]) for state in states), default=0)
-    for task_index in range(max_tasks):
-        batch_items = []
-        batch_state_indices = []
-        for state_index, state in enumerate(states):
-            if task_index >= len(state["tasks"]):
-                continue
-            task_meta = state["tasks"][task_index]
-            cache_key = task_meta["cache_key"]
-            batch_items.append(
-                {
-                    "base_frame": state["result"],
-                    "task": task_meta,
-                    "fake_frame": input_cache[cache_key],
-                    "enhanced_frame": enhance_cache.get(cache_key) if executor.enhancer_name is not None else None,
-                }
-            )
-            batch_state_indices.append(state_index)
-        if not batch_items:
-            continue
-        composed_frames = compose_mgr.compose_tasks_batch(batch_items)
-        for state_index, composed_frame in zip(batch_state_indices, composed_frames):
-            states[state_index]["result"] = composed_frame
-    return [state["result"] for state in states]
 
 
 def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_dir, mask_dir, enhance_dir, intermediate_video, stages, manifest, memory_plan):
     frame_count = manifest.get("frame_count", max(endframe - entry.startframe, 1))
     composite_state = manifest.setdefault("composite_state", {})
     completed_frames = int(composite_state.get("completed_frames", 0) or 0)
+    segment_states = composite_state.setdefault("segments", {})
+    pack_list = list(executor.iter_detect_packs(detect_dir) or [])
+    expected_segment_keys = [get_composite_segment_key(pack_data) for pack_data in pack_list]
+    segment_dir = get_composite_segment_dir(intermediate_video)
+
     if stages["composite"] and intermediate_video.exists() and completed_frames >= frame_count:
         executor.completed_units += frame_count
         executor.update_progress("composite", detail="Reusing encoded composite video cache", step_completed=frame_count, step_total=frame_count, step_unit="frames", force_log=True)
         return
-    if intermediate_video.exists():
-        os.remove(str(intermediate_video))
+
+    intermediate_video.unlink(missing_ok=True)
+    segment_dir.mkdir(parents=True, exist_ok=True)
+    for segment_path in segment_dir.glob("*.mp4"):
+        if segment_path.stem not in expected_segment_keys:
+            segment_path.unlink(missing_ok=True)
+
+    completed_frames = 0
+    for pack_data in pack_list:
+        segment_key = get_composite_segment_key(pack_data)
+        segment_path = get_composite_segment_path(intermediate_video, pack_data)
+        segment_state = segment_states.get(segment_key) or {}
+        segment_frame_count = len(pack_data.get("frames", []))
+        if segment_path.exists() and segment_state.get("completed"):
+            segment_state["frame_count"] = segment_frame_count
+            completed_frames += segment_frame_count
+        else:
+            if segment_path.exists():
+                segment_path.unlink(missing_ok=True)
+            segment_state = {"completed": False, "frame_count": segment_frame_count}
+        segment_states[segment_key] = segment_state
+
     stages["composite"] = False
-    composite_state["completed_frames"] = 0
+    composite_state["completed_frames"] = completed_frames
     composite_state["frame_count"] = frame_count
     write_json(intermediate_video.parent / "manifest.json", manifest)
     compose_mgr = ProcessMgr(None)
     compose_mgr.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, executor.build_stage_options([]))
     fallback_mgr = None
     last_result_frame = None
-    processed_frames = 0
+    processed_frames = completed_frames
     last_progress_emit_at = 0.0
     progress_emit_frames = 8
     cap = open_video_capture(entry.filename)
@@ -200,15 +215,6 @@ def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_d
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
     writer_config = resolve_video_writer_config(roop.config.globals.video_encoder, roop.config.globals.video_quality)
-    writer = FFMPEG_VideoWriter(
-        str(intermediate_video),
-        (width, height),
-        fps,
-        codec=writer_config["codec"],
-        crf=roop.config.globals.video_quality,
-        ffmpeg_params=writer_config["ffmpeg_params"],
-        quality_args=writer_config["quality_args"],
-    )
 
     def load_pack_state(pack_data):
         if pack_data is None:
@@ -236,12 +242,7 @@ def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_d
     try:
         from .video_iter import iter_video_chunk
 
-        pack_iter = iter(executor.iter_detect_packs(detect_dir))
-        current_pack = next(pack_iter, None)
-        current_pack_end, frame_lookup, input_cache, enhance_cache = load_pack_state(current_pack)
         compose_worker_count = get_compose_worker_count(executor)
-        compose_gpu_batch_size = get_compose_gpu_batch_size(executor)
-        use_gpu_frame_batch = bool(getattr(compose_mgr, "should_use_gpu_compositor", lambda: False)()) and compose_gpu_batch_size > 1
 
         def emit_progress(force=False):
             nonlocal last_progress_emit_at
@@ -264,138 +265,78 @@ def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_d
                 fallback_mgr.last_swapped_frame = result.copy()
                 fallback_mgr.num_frames_no_face = 0
 
-        def write_composed_frames(results):
-            nonlocal processed_frames, last_result_frame, fallback_mgr
-            valid_results = [result for result in results if result is not None]
-            if valid_results:
-                write_many = getattr(writer, "write_frames", None)
-                if callable(write_many):
-                    write_many(valid_results)
-                else:
-                    for result in valid_results:
-                        writer.write_frame(result)
-            for result in results:
-                executor.completed_units += 1
-                processed_frames += 1
-                cache_last_result_frame(result)
-            composite_state["completed_frames"] = processed_frames
-            emit_progress(force=processed_frames >= frame_count)
+        if processed_frames and roop.config.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
+            for completed_pack in reversed(pack_list):
+                completed_segment_path = get_composite_segment_path(intermediate_video, completed_pack)
+                completed_segment_state = segment_states.get(get_composite_segment_key(completed_pack)) or {}
+                if completed_segment_path.exists() and completed_segment_state.get("completed"):
+                    last_result_frame = read_last_video_frame(completed_segment_path)
+                    if last_result_frame is not None:
+                        break
 
-        def write_composed_frame(result):
-            write_composed_frames([result])
+        for pack_data in pack_list:
+            segment_key = get_composite_segment_key(pack_data)
+            segment_path = get_composite_segment_path(intermediate_video, pack_data)
+            segment_state = segment_states.setdefault(segment_key, {})
+            segment_frame_count = len(pack_data.get("frames", []))
+            if segment_path.exists() and segment_state.get("completed"):
+                executor.completed_units += segment_frame_count
+                emit_progress(force=True)
+                continue
 
-        def flush_gpu_batch(batch_entries):
-            if not batch_entries:
-                return
-            results = compose_frames_from_cache_batch(executor, compose_mgr, batch_entries, input_cache, enhance_cache)
-            write_composed_frames(results)
-            batch_entries.clear()
+            segment_path.unlink(missing_ok=True)
+            current_pack_end, frame_lookup, input_cache, enhance_cache = load_pack_state(pack_data)
+            pack_frames = pack_data.get("frames", [])
+            if not pack_frames:
+                segment_state["completed"] = True
+                segment_state["frame_count"] = 0
+                write_json(intermediate_video.parent / "manifest.json", manifest)
+                continue
 
-        if use_gpu_frame_batch:
-            batched_frames = []
-            for frame_number, frame in iter_video_chunk(entry.filename, entry.startframe, endframe, memory_plan["prefetch_frames"]):
-                while current_pack_end is not None and frame_number > current_pack_end:
-                    flush_gpu_batch(batched_frames)
-                    current_pack = next(pack_iter, None)
-                    current_pack_end, frame_lookup, input_cache, enhance_cache = load_pack_state(current_pack)
+            pack_start_frame = int(pack_frames[0]["frame_number"])
+            pack_end_frame = int(pack_frames[-1]["frame_number"]) + 1
+            segment_writer = create_stage_video_writer(
+                str(segment_path),
+                (width, height),
+                fps,
+                codec=writer_config["codec"],
+                crf=roop.config.globals.video_quality,
+                ffmpeg_params=writer_config["ffmpeg_params"],
+                quality_args=writer_config["quality_args"],
+            )
+            pack_processed_frames = 0
+            checkpoint_completed_frames = processed_frames
 
-                frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
-                if frame_meta["fallback"]:
-                    flush_gpu_batch(batched_frames)
-                    if roop.config.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
-                        fallback_mgr = prepare_fallback_mgr(executor, fallback_mgr, last_result_frame)
-                    elif not should_use_cached_fallback_fast_path():
-                        fallback_mgr = executor.get_fallback_mgr()
-                    result = compose_frame_from_cache(
-                        executor,
-                        compose_mgr,
-                        frame,
-                        frame_meta,
-                        input_cache,
-                        enhance_cache,
-                        fallback_mgr,
-                        last_result_frame,
-                    )
-                    write_composed_frame(result)
-                    continue
+            def write_composed_frames(results):
+                nonlocal processed_frames, pack_processed_frames
+                valid_results = [result for result in results if result is not None]
+                if valid_results:
+                    write_many = getattr(segment_writer, "write_frames", None)
+                    if callable(write_many):
+                        write_many(valid_results)
+                    else:
+                        for result in valid_results:
+                            segment_writer.write_frame(result)
+                for result in results:
+                    executor.completed_units += 1
+                    processed_frames += 1
+                    pack_processed_frames += 1
+                    cache_last_result_frame(result)
+                composite_state["completed_frames"] = processed_frames
+                emit_progress(force=processed_frames >= frame_count)
 
-                batched_frames.append((frame, frame_meta))
-                if len(batched_frames) >= compose_gpu_batch_size:
-                    flush_gpu_batch(batched_frames)
-            flush_gpu_batch(batched_frames)
-        elif compose_worker_count == 1:
-            for frame_number, frame in iter_video_chunk(entry.filename, entry.startframe, endframe, memory_plan["prefetch_frames"]):
-                while current_pack_end is not None and frame_number > current_pack_end:
-                    current_pack = next(pack_iter, None)
-                    current_pack_end, frame_lookup, input_cache, enhance_cache = load_pack_state(current_pack)
+            def write_composed_frame(result):
+                write_composed_frames([result])
 
-                frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
-                if frame_meta["fallback"]:
-                    if roop.config.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
-                        fallback_mgr = prepare_fallback_mgr(executor, fallback_mgr, last_result_frame)
-                    elif not should_use_cached_fallback_fast_path():
-                        fallback_mgr = executor.get_fallback_mgr()
-                result = compose_frame_from_cache(
-                    executor,
-                    compose_mgr,
-                    frame,
-                    frame_meta,
-                    input_cache,
-                    enhance_cache,
-                    fallback_mgr,
-                    last_result_frame,
-                )
-                write_composed_frame(result)
-        else:
-            worker_state = local()
-            worker_managers = []
-            pending_futures = {}
-            buffered_results = {}
-            next_result_index = 0
-            max_in_flight = max(compose_worker_count * 2, 1)
-
-            def get_thread_compose_mgr():
-                thread_compose_mgr = getattr(worker_state, "compose_mgr", None)
-                if thread_compose_mgr is None:
-                    thread_compose_mgr = ProcessMgr(None)
-                    thread_compose_mgr.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, executor.build_stage_options([]))
-                    worker_state.compose_mgr = thread_compose_mgr
-                    worker_managers.append(thread_compose_mgr)
-                return thread_compose_mgr
-
-            def compose_non_fallback_frame(frame, frame_meta, source_cache, enhanced_cache):
-                thread_compose_mgr = get_thread_compose_mgr()
-                return compose_frame_from_cache(executor, thread_compose_mgr, frame, frame_meta, source_cache, enhanced_cache)
-
-            def flush_done_futures(done_futures):
-                nonlocal next_result_index
-                for done_future in done_futures:
-                    frame_index = pending_futures.pop(done_future)
-                    buffered_results[frame_index] = done_future.result()
-                while next_result_index in buffered_results:
-                    result = buffered_results.pop(next_result_index)
-                    write_composed_frame(result)
-                    next_result_index += 1
-
-            def flush_all_pending():
-                while pending_futures:
-                    done_futures, _ = wait(set(pending_futures), return_when=FIRST_COMPLETED)
-                    flush_done_futures(done_futures)
-
-            with ThreadPoolExecutor(max_workers=compose_worker_count, thread_name_prefix="staged_compose") as pool:
-                frame_index = 0
-                for frame_number, frame in iter_video_chunk(entry.filename, entry.startframe, endframe, memory_plan["prefetch_frames"]):
-                    while current_pack_end is not None and frame_number > current_pack_end:
-                        current_pack = next(pack_iter, None)
-                        current_pack_end, frame_lookup, input_cache, enhance_cache = load_pack_state(current_pack)
-
-                    frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
-                    if frame_meta["fallback"]:
-                        flush_all_pending()
-                        if roop.config.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
-                            fallback_mgr = prepare_fallback_mgr(executor, fallback_mgr, last_result_frame)
-                        elif not should_use_cached_fallback_fast_path():
-                            fallback_mgr = executor.get_fallback_mgr()
+            try:
+                if compose_worker_count == 1:
+                    for frame_number, frame in iter_video_chunk(entry.filename, pack_start_frame, pack_end_frame, memory_plan["prefetch_frames"]):
+                        frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
+                        if frame_meta["fallback"]:
+                            if roop.config.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
+                                fallback_mgr = prepare_fallback_mgr(executor, fallback_mgr, last_result_frame)
+                            elif not should_use_cached_fallback_fast_path():
+                                fallback_mgr = executor.get_fallback_mgr()
                         result = compose_frame_from_cache(
                             executor,
                             compose_mgr,
@@ -407,33 +348,124 @@ def ensure_full_compose_stage(executor, entry, endframe, fps, detect_dir, swap_d
                             last_result_frame,
                         )
                         write_composed_frame(result)
-                        frame_index += 1
-                        next_result_index = frame_index
-                        continue
+                else:
+                    worker_state = local()
+                    worker_managers = []
+                    pending_futures = {}
+                    buffered_results = {}
+                    next_result_index = 0
+                    max_in_flight = max(compose_worker_count * 2, 1)
 
-                    if len(pending_futures) >= max_in_flight:
-                        done_futures, _ = wait(set(pending_futures), return_when=FIRST_COMPLETED)
-                        flush_done_futures(done_futures)
+                    def get_thread_compose_mgr():
+                        thread_compose_mgr = getattr(worker_state, "compose_mgr", None)
+                        if thread_compose_mgr is None:
+                            thread_compose_mgr = ProcessMgr(None)
+                            thread_compose_mgr.initialize(roop.config.globals.INPUT_FACESETS, roop.config.globals.TARGET_FACES, executor.build_stage_options([]))
+                            worker_state.compose_mgr = thread_compose_mgr
+                            worker_managers.append(thread_compose_mgr)
+                        return thread_compose_mgr
 
-                    future = pool.submit(compose_non_fallback_frame, frame, frame_meta, input_cache, enhance_cache)
-                    pending_futures[future] = frame_index
-                    frame_index += 1
+                    def compose_non_fallback_frame(frame, frame_meta, source_cache, enhanced_cache):
+                        thread_compose_mgr = get_thread_compose_mgr()
+                        return compose_frame_from_cache(executor, thread_compose_mgr, frame, frame_meta, source_cache, enhanced_cache)
 
-                flush_all_pending()
+                    def flush_done_futures(done_futures):
+                        nonlocal next_result_index
+                        for done_future in done_futures:
+                            frame_index = pending_futures.pop(done_future)
+                            buffered_results[frame_index] = done_future.result()
+                        while next_result_index in buffered_results:
+                            result = buffered_results.pop(next_result_index)
+                            write_composed_frame(result)
+                            next_result_index += 1
 
-            for worker_manager in worker_managers:
-                worker_manager.release_resources()
+                    def flush_all_pending():
+                        while pending_futures:
+                            done_futures, _ = wait(set(pending_futures), return_when=FIRST_COMPLETED)
+                            flush_done_futures(done_futures)
+
+                    with ThreadPoolExecutor(max_workers=compose_worker_count, thread_name_prefix="staged_compose") as pool:
+                        frame_index = 0
+                        for frame_number, frame in iter_video_chunk(entry.filename, pack_start_frame, pack_end_frame, memory_plan["prefetch_frames"]):
+                            frame_meta = frame_lookup.get(frame_number, {"tasks": [], "fallback": True})
+                            if frame_meta["fallback"]:
+                                flush_all_pending()
+                                if roop.config.globals.no_face_action == eNoFaceAction.USE_LAST_SWAPPED:
+                                    fallback_mgr = prepare_fallback_mgr(executor, fallback_mgr, last_result_frame)
+                                elif not should_use_cached_fallback_fast_path():
+                                    fallback_mgr = executor.get_fallback_mgr()
+                                result = compose_frame_from_cache(
+                                    executor,
+                                    compose_mgr,
+                                    frame,
+                                    frame_meta,
+                                    input_cache,
+                                    enhance_cache,
+                                    fallback_mgr,
+                                    last_result_frame,
+                                )
+                                write_composed_frame(result)
+                                frame_index += 1
+                                next_result_index = frame_index
+                                continue
+
+                            if len(pending_futures) >= max_in_flight:
+                                done_futures, _ = wait(set(pending_futures), return_when=FIRST_COMPLETED)
+                                flush_done_futures(done_futures)
+
+                            future = pool.submit(compose_non_fallback_frame, frame, frame_meta, input_cache, enhance_cache)
+                            pending_futures[future] = frame_index
+                            frame_index += 1
+
+                        flush_all_pending()
+
+                    for worker_manager in worker_managers:
+                        worker_manager.release_resources()
+            finally:
+                segment_writer.close()
+
+            segment_completed = roop.config.globals.processing and pack_processed_frames >= segment_frame_count and segment_path.exists()
+            if not segment_completed:
+                segment_state["completed"] = False
+                segment_state["frame_count"] = segment_frame_count
+                processed_frames = checkpoint_completed_frames
+                composite_state["completed_frames"] = checkpoint_completed_frames
+                segment_path.unlink(missing_ok=True)
+                write_json(intermediate_video.parent / "manifest.json", manifest)
+                break
+
+            segment_state["completed"] = True
+            segment_state["frame_count"] = segment_frame_count
+            composite_state["completed_frames"] = processed_frames
+            write_json(intermediate_video.parent / "manifest.json", manifest)
+
         emit_progress(force=True)
     finally:
         compose_mgr.release_resources()
-        writer.close()
-    completed_successfully = roop.config.globals.processing and processed_frames >= frame_count and intermediate_video.exists()
+
+    completed_segment_paths = []
+    for pack_data in pack_list:
+        segment_key = get_composite_segment_key(pack_data)
+        segment_path = get_composite_segment_path(intermediate_video, pack_data)
+        segment_state = segment_states.get(segment_key) or {}
+        if segment_state.get("completed") and segment_path.exists():
+            completed_segment_paths.append(str(segment_path))
+
+    completed_successfully = roop.config.globals.processing and processed_frames >= frame_count and len(completed_segment_paths) == len(pack_list)
     if not completed_successfully:
         stages["composite"] = False
-        composite_state["completed_frames"] = processed_frames
-        if intermediate_video.exists():
-            intermediate_video.unlink(missing_ok=True)
+        composite_state["completed_frames"] = sum(
+            int((segment_states.get(get_composite_segment_key(pack_data)) or {}).get("frame_count", 0))
+            for pack_data in pack_list
+            if (segment_states.get(get_composite_segment_key(pack_data)) or {}).get("completed")
+        )
+        intermediate_video.unlink(missing_ok=True)
     else:
+        intermediate_video.unlink(missing_ok=True)
+        if len(completed_segment_paths) == 1:
+            shutil.copyfile(completed_segment_paths[0], intermediate_video)
+        else:
+            ffmpeg.join_videos(completed_segment_paths, str(intermediate_video), True)
         stages["composite"] = True
         composite_state["completed_frames"] = frame_count
     write_json(intermediate_video.parent / "manifest.json", manifest)
@@ -559,13 +591,16 @@ __all__ = [
     "can_direct_encode_without_processing",
     "compose_chunk",
     "compose_frame_from_cache",
-    "compose_frames_from_cache_batch",
     "compose_image_from_cache",
+    "create_stage_video_writer",
     "ensure_direct_video_output",
     "ensure_full_compose_stage",
     "ensure_full_encode_stage",
     "get_composite_progress_detail",
-    "get_compose_gpu_batch_size",
+    "get_composite_segment_dir",
+    "get_composite_segment_key",
+    "get_composite_segment_path",
     "get_compose_worker_count",
+    "read_last_video_frame",
     "should_skip_completed_output",
 ]
