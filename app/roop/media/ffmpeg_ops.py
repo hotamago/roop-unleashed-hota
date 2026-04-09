@@ -8,6 +8,7 @@ import roop.utils as util
 from typing import List, Any
 from roop.media.video_io import resolve_video_writer_config
 
+_GPU_VIDEO_ENCODERS = {"h264_nvenc", "hevc_nvenc"}
 
 def _strip_preset_arg(ffmpeg_params: List[str]) -> List[str]:
     cleaned: List[str] = []
@@ -31,6 +32,29 @@ def _build_concat_reencode_args() -> List[str]:
     resolved_codec = writer_config["codec"]
     quality_args = list(writer_config["quality_args"])
     ffmpeg_params = _strip_preset_arg(list(writer_config["ffmpeg_params"]))
+
+    if resolved_codec in _GPU_VIDEO_ENCODERS:
+        ffmpeg_params.extend(
+            [
+                "-rc",
+                "vbr_hq",
+                "-preset",
+                "p7",
+                "-tune",
+                "hq",
+                "-multipass",
+                "fullres",
+                "-rc-lookahead",
+                "32",
+                "-spatial_aq",
+                "1",
+                "-temporal_aq",
+                "1",
+                "-gpu",
+                str(roop.config.globals.cuda_device_id),
+            ]
+        )
+
     return ["-c:v", resolved_codec, *quality_args, *ffmpeg_params]
 
 def run_ffmpeg(args: List[str]) -> bool:
